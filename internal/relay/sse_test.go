@@ -183,3 +183,111 @@ func TestSSEHub_ConcurrentSubscribeBroadcast(t *testing.T) {
 	wg.Wait()
 	// No assertion on got — the test verifies absence of data races / panics.
 }
+
+// ---------------------------------------------------------------------------
+// Edge cases — gap-fill tests
+// ---------------------------------------------------------------------------
+
+// TestSSEHub_DoubleCancel_NoPanic verifies that calling the cancel function
+// returned by Subscribe() a second time does not panic. The implementation
+// must guard against the channel already being closed.
+func TestSSEHub_DoubleCancel_NoPanic(t *testing.T) {
+	hub := NewSSEHub()
+	_, _, cancel := hub.Subscribe()
+
+	cancel() // first call — removes subscriber and closes channel
+	// Must not panic on second call.
+	cancel()
+}
+
+// TestSSEHub_Broadcast_SlowSubscriber_ReturnsPromptly verifies that Broadcast
+// returns quickly even when a subscriber's channel is full. We saturate the
+// hub by broadcasting more messages than the channel capacity (4) without
+// reading from the channel, then verify the next Broadcast completes within
+// a generous 100 ms budget.
+func TestSSEHub_Broadcast_SlowSubscriber_ReturnsPromptly(t *testing.T) {
+	hub := NewSSEHub()
+	_, _, cancel := hub.Subscribe()
+	defer cancel()
+
+	// Send enough broadcasts to fill the channel (capacity 4) without a reader.
+	// The non-blocking select in Broadcast will drop messages on a full channel.
+	// This ensures the channel is at capacity before the timed assertion below.
+	for i := 0; i < 4; i++ {
+		hub.Broadcast("new-clip", `{"id":"fill"}`)
+	}
+
+	// Now the subscriber channel is at capacity. Another Broadcast must not block.
+	done := make(chan struct{})
+	go func() {
+		hub.Broadcast("new-clip", `{"id":"slow"}`)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Broadcast returned promptly — pass.
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Broadcast blocked for >100 ms on a full subscriber channel")
+	}
+}
+
+// TestSSEHub_ConcurrentUnsubscribeBeforeBroadcast verifies that cancelling all
+// subscribers and then calling Broadcast does not race or panic. This covers
+// the common real-world scenario where clients disconnect just before a
+// broadcast: after all cancels complete the hub is empty and Broadcast must be
+// a no-op. Run under -race.
+func TestSSEHub_ConcurrentUnsubscribeBeforeBroadcast(t *testing.T) {
+	hub := NewSSEHub()
+
+	const numSubscribers = 5
+	var wg sync.WaitGroup
+	for range numSubscribers {
+		_, _, cancel := hub.Subscribe()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cancel()
+		}()
+	}
+
+	// Wait for all cancels to complete before broadcasting.
+	wg.Wait()
+
+	// After all subscribers have cancelled, Broadcast must not panic.
+	hub.Broadcast("new-clip", `{"id":"after-cancel"}`)
+
+	if got := hub.Count(); got != 0 {
+		t.Errorf("expected 0 subscribers after all cancels, got %d", got)
+	}
+}
+
+// TestSSEHub_ConcurrentMultipleBroadcasts verifies that multiple concurrent
+// Broadcast calls do not cause a data race. Subscribers are registered before
+// any broadcast starts and remain connected throughout. Run under -race.
+func TestSSEHub_ConcurrentMultipleBroadcasts(t *testing.T) {
+	hub := NewSSEHub()
+
+	const numSubscribers = 3
+	cancels := make([]func(), numSubscribers)
+	for i := range numSubscribers {
+		_, _, cancel := hub.Subscribe()
+		cancels[i] = cancel
+	}
+	defer func() {
+		for _, c := range cancels {
+			c()
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hub.Broadcast("new-clip", `{"id":"parallel"}`)
+		}()
+	}
+	wg.Wait()
+	// No assertion — the test verifies absence of data races / panics.
+}

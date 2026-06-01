@@ -239,3 +239,113 @@ func TestCompanionHandler_NonGetToRoot_Returns405(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Edge cases — gap-fill tests
+// ---------------------------------------------------------------------------
+
+// nonFlusherRecorder implements http.ResponseWriter but deliberately does NOT
+// implement http.Flusher. This is achieved by forwarding only the three
+// ResponseWriter methods rather than embedding *httptest.ResponseRecorder
+// (which would promote its Flush() method).
+type nonFlusherRecorder struct {
+	rec *httptest.ResponseRecorder
+}
+
+func (r *nonFlusherRecorder) Header() http.Header         { return r.rec.Header() }
+func (r *nonFlusherRecorder) WriteHeader(code int)        { r.rec.WriteHeader(code) }
+func (r *nonFlusherRecorder) Write(b []byte) (int, error) { return r.rec.Write(b) }
+
+// TestCompanionHandler_GetEvents_NonFlusher_Returns500 verifies that when the
+// ResponseWriter does not implement http.Flusher the handler responds with
+// 500 Internal Server Error rather than panicking.
+func TestCompanionHandler_GetEvents_NonFlusher_Returns500(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub)
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	inner := httptest.NewRecorder()
+	// nonFlusherRecorder forwards ResponseWriter methods but does NOT expose
+	// Flush(), so the http.Flusher type assertion inside handleEvents fails.
+	w := &nonFlusherRecorder{rec: inner}
+
+	handler.ServeHTTP(w, req)
+
+	if inner.Code != http.StatusInternalServerError {
+		t.Errorf("GET /events with non-Flusher: expected 500, got %d", inner.Code)
+	}
+}
+
+// TestCompanionHandler_NonGetToEvents_Returns405 verifies that POST (and other
+// non-GET methods) to /events returns 405 Method Not Allowed.
+func TestCompanionHandler_NonGetToEvents_Returns405(t *testing.T) {
+	methods := []string{
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+	}
+
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub)
+
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/events", nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s /events: expected 405, got %d", method, w.Code)
+			}
+		})
+	}
+}
+
+// TestCompanionHandler_GetEvents_SSEHeaders verifies that the /events response
+// includes the Cache-Control: no-cache and X-Accel-Buffering: no headers
+// required to prevent proxies from buffering the event stream.
+func TestCompanionHandler_GetEvents_SSEHeaders(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(w, req)
+	}()
+
+	// Allow the handler to write headers before we cancel.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("GET /events: handler did not return after context cancellation")
+	}
+
+	tests := []struct {
+		header string
+		want   string
+	}{
+		{"Cache-Control", "no-cache"},
+		{"X-Accel-Buffering", "no"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.header, func(t *testing.T) {
+			got := w.Header().Get(tc.header)
+			if got != tc.want {
+				t.Errorf("GET /events: %s header = %q, want %q", tc.header, got, tc.want)
+			}
+		})
+	}
+}
