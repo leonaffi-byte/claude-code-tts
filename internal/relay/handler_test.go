@@ -37,7 +37,7 @@ func (m *mockSynthesizer) Synthesize(text string, voice tts.Voice) ([]byte, erro
 func TestHandler_PostIngest_Returns200WithID(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -63,7 +63,7 @@ func TestHandler_PostIngest_Returns200WithID(t *testing.T) {
 func TestHandler_PostIngest_CallsSynthesizerWithProvidedText(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "synthesize this"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -83,7 +83,7 @@ func TestHandler_PostIngest_CallsSynthesizerWithProvidedText(t *testing.T) {
 func TestHandler_PostIngest_SynthesisError_Returns500(t *testing.T) {
 	mock := &mockSynthesizer{err: errors.New("openai unavailable")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -102,7 +102,7 @@ func TestHandler_PostIngest_StoresClipReturnedBySynthesizer(t *testing.T) {
 	expectedAudio := []byte{0xFF, 0xFB, 0x90, 0x64}
 	mock := &mockSynthesizer{audioData: expectedAudio}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "store me"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -143,7 +143,7 @@ func TestHandler_GetClip_ExistingID_Returns200WithMP3Bytes(t *testing.T) {
 	}
 
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/"+id, nil)
 	w := httptest.NewRecorder()
@@ -167,7 +167,7 @@ func TestHandler_GetClip_ExistingID_Returns200WithMP3Bytes(t *testing.T) {
 func TestHandler_GetClip_MissingID_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/does-not-exist", nil)
 	w := httptest.NewRecorder()
@@ -188,7 +188,7 @@ func TestHandler_GetClip_MissingID_Returns404(t *testing.T) {
 func TestHandler_PostIngest_MissingTextField_Returns400(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -210,7 +210,7 @@ func TestHandler_PostIngest_MissingTextField_Returns400(t *testing.T) {
 func TestHandler_PostIngest_EmptyBody_Returns400(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodPost, "/ingest", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/json")
@@ -231,7 +231,7 @@ func TestHandler_PostIngest_EmptyBody_Returns400(t *testing.T) {
 func TestHandler_PostIngest_WrongMethod_Returns405(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "hello"}`)
 	req := httptest.NewRequest(http.MethodPut, "/ingest", body)
@@ -257,7 +257,7 @@ func TestHandler_PostIngest_WrongMethod_Returns405(t *testing.T) {
 func TestHandler_GetClip_EmptyID_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/", nil)
 	w := httptest.NewRecorder()
@@ -279,7 +279,7 @@ func TestHandler_GetClip_WrongMethod_Returns405(t *testing.T) {
 	}
 
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodPost, "/clips/"+id, nil)
 	w := httptest.NewRecorder()
@@ -300,7 +300,7 @@ func TestHandler_GetClip_WrongMethod_Returns405(t *testing.T) {
 func TestHandler_UnknownRoute_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
 	w := httptest.NewRecorder()
@@ -313,18 +313,18 @@ func TestHandler_UnknownRoute_Returns404(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Hub integration — NewHandlerWithHub wires hub to POST /ingest
+// Hub integration — NewHandler wires hub to POST /ingest
 // ---------------------------------------------------------------------------
 
 // TestHandler_PostIngest_BroadcastsToHub verifies that a successful POST
-// /ingest via NewHandlerWithHub sends a "new-clip" SSE event to any
+// /ingest via NewHandler sends a "new-clip" SSE event to any
 // subscriber on the hub. The test subscribes to the hub, issues the request,
 // then waits up to 100 ms for the message to arrive on the subscriber channel.
 func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewHandlerWithHub(mock, store, hub)
+	handler := NewHandler(mock, store, hub)
 
 	_, ch, cancel := hub.Subscribe()
 	defer cancel()

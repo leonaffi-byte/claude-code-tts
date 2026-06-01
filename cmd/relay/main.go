@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,25 +31,56 @@ func main() {
 		logging.Fatal("OPENAI_API_KEY environment variable is required")
 	}
 
-	port := os.Getenv("RELAY_PORT")
-	if port == "" {
-		port = "8765"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		logging.Fatal("cannot determine home directory: %v", err)
 	}
-	// Bind to loopback only — never expose on 0.0.0.0.
-	addr := "127.0.0.1:" + port
+
+	// Load or generate persistent token.
+	tokenPath := filepath.Join(home, ".claude", "plugins", "claude-code-tts", "token")
+	ts := relay.NewTokenStore(tokenPath)
+	token, err := ts.LoadOrGenerate()
+	if err != nil {
+		logging.Fatal("failed to load/generate token: %v", err)
+	}
+
+	// Ingest server binds to loopback only — never exposed on 0.0.0.0.
+	ingestPort := os.Getenv("RELAY_PORT")
+	if ingestPort == "" {
+		ingestPort = "8765"
+	}
+	ingestAddr := "127.0.0.1:" + ingestPort
 
 	publicPort := os.Getenv("PUBLIC_PORT")
 	if publicPort == "" {
 		publicPort = "8766"
 	}
-	publicAddr := ":" + publicPort
 
+	// Print QR code so the user can scan from their phone.
+	baseURL := fmt.Sprintf("http://%s:%s", lanIP(), publicPort)
+	if err := relay.PrintQR(os.Stdout, baseURL, token); err != nil {
+		logging.Info("QR generation failed: %v", err)
+	}
+
+	// Shared store and hub — both ingest and companion operate on the same data.
+	store := relay.NewClipStore(10)
+	hub := relay.NewSSEHub()
 	synth := tts.NewClient()
 
-	srv, err := relay.NewServer(addr, publicAddr, synth, 10)
+	ingestSrv, err := relay.NewServer(ingestAddr, synth, store, hub)
 	if err != nil {
-		logging.Fatal("failed to create relay server: %v", err)
+		logging.Fatal("failed to create ingest server: %v", err)
 	}
+
+	// Wire token store and QR printer into the ingest handler for /rotate-token.
+	ingestSrv.Handler().
+		WithTokenStore(ts).
+		WithQRPrinter(func(newToken string) error {
+			return relay.PrintQR(os.Stdout, baseURL, newToken)
+		})
+
+	companion := relay.NewCompanionHandler(store, hub, token)
+	pubSrv := relay.NewPublicServer(token, companion)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	quit := make(chan os.Signal, 1)
@@ -56,15 +90,38 @@ func main() {
 		logging.Info("shutting down relay...")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			logging.Error("shutdown error: %v", err)
+		if err := ingestSrv.Shutdown(ctx); err != nil {
+			logging.Error("ingest server shutdown error: %v", err)
+		}
+		if err := pubSrv.Shutdown(ctx); err != nil {
+			logging.Error("public server shutdown error: %v", err)
 		}
 		os.Exit(0)
 	}()
 
-	logging.Info("relay private listener: %s", addr)
-	logging.Info("relay public companion: http://localhost:%s/", publicPort)
-	if err := srv.Start(); err != nil && err != http.ErrServerClosed {
-		logging.Fatal("relay server error: %v", err)
+	go func() {
+		logging.Info("ingest server listening on %s", ingestAddr)
+		if err := ingestSrv.Start(); err != nil && err != http.ErrServerClosed {
+			logging.Fatal("ingest server error: %v", err)
+		}
+	}()
+
+	logging.Info("public server listening on 0.0.0.0:%s", publicPort)
+	if err := pubSrv.Serve("0.0.0.0:" + publicPort); err != nil && err != http.ErrServerClosed {
+		logging.Fatal("public server error: %v", err)
 	}
+}
+
+// lanIP returns the first non-loopback IPv4 address found on the host, or
+// "localhost" when no suitable interface is found.
+func lanIP() string {
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ip4 := ipNet.IP.To4(); ip4 != nil {
+				return ip4.String()
+			}
+		}
+	}
+	return "localhost"
 }
