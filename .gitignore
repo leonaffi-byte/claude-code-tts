@@ -6,6 +6,7 @@ dist/
 *.so
 *.dylib
 /bin/tts-server
+relay
 
 # Test files
 coverage.out
