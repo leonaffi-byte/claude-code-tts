@@ -1,8 +1,16 @@
 package relay
 
+import (
+	"fmt"
+	"sync"
+
+	"github.com/google/uuid"
+)
+
 // ClipStore holds a bounded number of in-memory audio clips, evicting the
 // oldest when the capacity is exceeded. It is safe for concurrent use.
 type ClipStore struct {
+	mu       sync.Mutex
 	capacity int
 	clips    map[string][]byte
 	order    []string
@@ -10,6 +18,9 @@ type ClipStore struct {
 
 // NewClipStore creates a ClipStore that retains at most capacity clips.
 func NewClipStore(capacity int) *ClipStore {
+	if capacity <= 0 {
+		capacity = 10
+	}
 	return &ClipStore{
 		capacity: capacity,
 		clips:    make(map[string][]byte),
@@ -19,13 +30,55 @@ func NewClipStore(capacity int) *ClipStore {
 // Add stores audioData and returns a unique ID for the clip.
 // When the store is at capacity the oldest clip is evicted first.
 func (s *ClipStore) Add(audioData []byte) (string, error) {
-	// stub — logic not yet implemented
-	return "", nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := uuid.New().String()
+
+	if len(s.order) >= s.capacity {
+		oldest := s.order[0]
+		delete(s.clips, oldest)
+		s.order = s.order[1:]
+	}
+
+	s.clips[id] = audioData
+	s.order = append(s.order, id)
+
+	return id, nil
 }
 
 // Get retrieves a clip by ID. Returns the audio bytes and true when found,
 // nil and false when the ID is unknown or has been evicted.
 func (s *ClipStore) Get(id string) ([]byte, bool) {
-	// stub — logic not yet implemented
-	return nil, false
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, ok := s.clips[id]
+	if !ok {
+		return nil, false
+	}
+	return data, true
+}
+
+// Close is a no-op for the in-memory store but satisfies the lifecycle contract.
+func (s *ClipStore) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for k := range s.clips {
+		delete(s.clips, k)
+	}
+	s.order = nil
+	return nil
+}
+
+// GetClip returns a Clip value for use by the HTTP handler layer. Returns an
+// error if the ID is not found. This wraps Get for callers that need a richer
+// return type rather than raw bytes.
+func (s *ClipStore) GetClip(id string) ([]byte, error) {
+	data, ok := s.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("clip %q not found", id)
+	}
+	return data, nil
 }
