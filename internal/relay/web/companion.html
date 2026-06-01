@@ -1,7 +1,244 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>TTS Companion</title></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TTS Companion</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      margin-bottom: 32px;
+      color: #a0c4ff;
+      letter-spacing: 0.04em;
+    }
+
+    #unlock {
+      display: block;
+      width: 100%;
+      max-width: 320px;
+      padding: 20px;
+      font-size: 1.2rem;
+      font-weight: 600;
+      background: #4361ee;
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+
+    #unlock:active {
+      background: #3a0ca3;
+      transform: scale(0.97);
+    }
+
+    #unlock:disabled {
+      background: #2d3561;
+      color: #7a7a9a;
+      cursor: default;
+      transform: none;
+    }
+
+    #status {
+      margin-top: 28px;
+      font-size: 1rem;
+      color: #a0b0c0;
+      text-align: center;
+      line-height: 1.5;
+      max-width: 320px;
+      min-height: 2.5rem;
+    }
+
+    #status.playing {
+      color: #80ffab;
+    }
+
+    #status.error {
+      color: #ff6b6b;
+    }
+  </style>
+</head>
 <body>
-<p>TTS Companion — placeholder</p>
+  <h1>TTS Companion</h1>
+  <button id="unlock">Tap to enable audio</button>
+  <p id="status">Tap the button above to unlock audio</p>
+  <audio id="player"></audio>
+
+  <script>
+    (function () {
+      var unlockBtn = document.getElementById('unlock');
+      var statusEl  = document.getElementById('status');
+      var audio     = document.getElementById('player');
+
+      var unlocked  = false;
+      var prevSrc   = null;
+
+      // ---------------------------------------------------------------
+      // 1. Audio unlock gate
+      //    iOS Safari requires a user gesture before audio can play.
+      //    We play a silent buffer on tap, then keep the <audio> element
+      //    alive so its autoplay permission carries forward.
+      // ---------------------------------------------------------------
+      unlockBtn.addEventListener('click', function () {
+        // Play a silent WAV to satisfy the user-gesture requirement
+        audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=';
+        var playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(function () { /* ignore */ });
+        }
+        audio.pause();
+        audio.src = '';
+
+        unlocked = true;
+        unlockBtn.disabled = true;
+        unlockBtn.textContent = 'Audio enabled';
+        setStatus('Connecting…', '');
+        connectSSE();
+        setupMediaSession();
+      });
+
+      // ---------------------------------------------------------------
+      // 2. EventSource auto-play
+      //    SSE reconnect is handled automatically by the browser.
+      // ---------------------------------------------------------------
+      function connectSSE() {
+        var es = new EventSource('/events');
+
+        es.addEventListener('new-clip', function (e) {
+          var data;
+          try {
+            data = JSON.parse(e.data);
+          } catch (err) {
+            setStatus('Bad event data', 'error');
+            return;
+          }
+          var id = data.id;
+          if (!id) { return; }
+          playClip(id);
+        });
+
+        es.addEventListener('open', function () {
+          setStatus('Waiting…', '');
+        });
+
+        es.addEventListener('error', function () {
+          setStatus('Connection lost — reconnecting…', 'error');
+        });
+      }
+
+      function playClip(id) {
+        setStatus('Loading: ' + id, '');
+
+        fetch('/clips/' + id)
+          .then(function (r) {
+            if (!r.ok) { throw new Error('HTTP ' + r.status); }
+            return r.blob();
+          })
+          .then(function (blob) {
+            // Revoke previous object URL to avoid memory leaks
+            if (prevSrc) {
+              URL.revokeObjectURL(prevSrc);
+            }
+            var objectUrl = URL.createObjectURL(blob);
+            prevSrc = objectUrl;
+
+            audio.src = objectUrl;
+            var p = audio.play();
+            if (p !== undefined) {
+              p.catch(function (err) {
+                setStatus('Playback error: ' + err.message, 'error');
+              });
+            }
+
+            setStatus('Playing: ' + id, 'playing');
+            updateMediaSessionMetadata(id);
+          })
+          .catch(function (err) {
+            setStatus('Fetch error: ' + err.message, 'error');
+          });
+      }
+
+      // ---------------------------------------------------------------
+      // 3. MediaSession API
+      //    Registers lock-screen / notification controls.
+      //    Guarded because not all browsers support it.
+      // ---------------------------------------------------------------
+      function setupMediaSession() {
+        if (!('mediaSession' in navigator)) { return; }
+
+        updateMediaSessionMetadata(null);
+
+        navigator.mediaSession.setActionHandler('play', function () {
+          audio.play().catch(function () {});
+          setStatus('Playing', 'playing');
+        });
+
+        navigator.mediaSession.setActionHandler('pause', function () {
+          audio.pause();
+          setStatus('Paused', '');
+        });
+      }
+
+      function updateMediaSessionMetadata(clipId) {
+        if (!('mediaSession' in navigator)) { return; }
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'TTS Clip' + (clipId ? ' — ' + clipId : ''),
+          artist: 'Claude Code TTS'
+        });
+      }
+
+      // ---------------------------------------------------------------
+      // Helpers
+      // ---------------------------------------------------------------
+      function setStatus(msg, cssClass) {
+        statusEl.textContent = msg;
+        statusEl.className = cssClass || '';
+      }
+
+      // Reflect native audio events in the status display
+      audio.addEventListener('ended', function () {
+        setStatus('Waiting…', '');
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'none';
+        }
+      });
+
+      audio.addEventListener('pause', function () {
+        if (unlocked && statusEl.className === 'playing') {
+          setStatus('Paused', '');
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'paused';
+          }
+        }
+      });
+
+      audio.addEventListener('play', function () {
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'playing';
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
