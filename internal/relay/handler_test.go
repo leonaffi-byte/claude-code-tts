@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
@@ -308,5 +309,49 @@ func TestHandler_UnknownRoute_Returns404(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for unknown route but got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hub integration — NewHandlerWithHub wires hub to POST /ingest
+// ---------------------------------------------------------------------------
+
+// TestHandler_PostIngest_BroadcastsToHub verifies that a successful POST
+// /ingest via NewHandlerWithHub sends a "new-clip" SSE event to any
+// subscriber on the hub. The test subscribes to the hub, issues the request,
+// then waits up to 100 ms for the message to arrive on the subscriber channel.
+func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
+	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandlerWithHub(mock, store, hub)
+
+	_, ch, cancel := hub.Subscribe()
+	defer cancel()
+
+	body := bytes.NewBufferString(`{"text": "broadcast me"}`)
+	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
+	}
+
+	// The ingest handler broadcasts synchronously before returning, so the
+	// message should already be in the buffered channel. Use a 100 ms timeout
+	// as a safety net.
+	select {
+	case msg := <-ch:
+		if !strings.Contains(msg, "event: new-clip\n") {
+			t.Errorf("hub broadcast message missing expected SSE event prefix:\ngot: %q", msg)
+		}
+		if !strings.Contains(msg, `"id"`) {
+			t.Errorf("hub broadcast message missing 'id' field:\ngot: %q", msg)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("timed out waiting for hub broadcast after POST /ingest")
 	}
 }
