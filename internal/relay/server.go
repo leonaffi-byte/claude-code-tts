@@ -89,3 +89,42 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	return nil
 }
+
+// PublicServer serves the companion page on the public-facing port,
+// with token-based auth middleware wrapping the CompanionHandler.
+// Used when the caller manages listeners independently (e.g. in tests).
+type PublicServer struct {
+	httpServer *http.Server
+	handler    http.Handler
+}
+
+// NewPublicServer creates a PublicServer. Call Serve() to begin listening.
+func NewPublicServer(token string, companion *CompanionHandler) *PublicServer {
+	h := NewAuthMiddleware(token, companion)
+	return &PublicServer{handler: h}
+}
+
+// Handler returns the http.Handler (useful for testing without binding a port).
+func (s *PublicServer) Handler() http.Handler {
+	return s.handler
+}
+
+// Serve starts the public server on addr. It blocks until the server closes.
+func (s *PublicServer) Serve(addr string) error {
+	s.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           s.handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      0, // SSE connections are long-lived; no write deadline
+		IdleTimeout:       120 * time.Second,
+	}
+	return s.httpServer.ListenAndServe()
+}
+
+// Shutdown gracefully stops the public server.
+func (s *PublicServer) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
+}
