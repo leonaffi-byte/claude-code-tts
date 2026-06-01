@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint run relay help
+.PHONY: build install clean test test-hooks lint run relay help
 
 # Variables
 BINARY_NAME=tts-server
@@ -67,6 +67,11 @@ clean:
 test:
 	@echo "Running tests..."
 	$(GO) test -v ./...
+
+## test-hooks: Run bash-based hook lifecycle tests
+test-hooks:
+	@echo "Running hook lifecycle tests..."
+	bash hooks/relay-lifecycle_test.sh
 
 ## test-coverage: Run tests with coverage
 test-coverage:
