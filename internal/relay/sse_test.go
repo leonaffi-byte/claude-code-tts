@@ -291,3 +291,63 @@ func TestSSEHub_ConcurrentMultipleBroadcasts(t *testing.T) {
 	wg.Wait()
 	// No assertion — the test verifies absence of data races / panics.
 }
+
+// ---------------------------------------------------------------------------
+// Subscriber cap tests
+// ---------------------------------------------------------------------------
+
+// TestSSEHub_MaxSubs_RejectsWhenFull verifies that Subscribe returns a nil
+// channel once the hub has reached its maxSubs limit, and that Count does not
+// exceed maxSubs.
+func TestSSEHub_MaxSubs_RejectsWhenFull(t *testing.T) {
+	hub := &SSEHub{
+		subscribers: make(map[string]chan string),
+		maxSubs:     3,
+	}
+
+	var cancels []func()
+	for i := 0; i < 3; i++ {
+		_, ch, cancel := hub.Subscribe()
+		if ch == nil {
+			t.Fatalf("subscription %d: expected non-nil channel below cap, got nil", i)
+		}
+		cancels = append(cancels, cancel)
+	}
+	defer func() {
+		for _, c := range cancels {
+			c()
+		}
+	}()
+
+	// The 4th subscription must be rejected.
+	_, ch, cancel := hub.Subscribe()
+	defer cancel()
+	if ch != nil {
+		t.Error("expected nil channel when subscriber cap is reached, got non-nil")
+	}
+
+	if got := hub.Count(); got != 3 {
+		t.Errorf("expected Count() == 3 at cap, got %d", got)
+	}
+}
+
+// TestSSEHub_MaxSubs_Zero_NoLimit verifies that a maxSubs of 0 is treated as
+// unlimited (no rejection).
+func TestSSEHub_MaxSubs_Zero_NoLimit(t *testing.T) {
+	hub := &SSEHub{
+		subscribers: make(map[string]chan string),
+		maxSubs:     0,
+	}
+
+	var cancels []func()
+	for i := 0; i < 10; i++ {
+		_, ch, cancel := hub.Subscribe()
+		if ch == nil {
+			t.Fatalf("subscription %d: expected non-nil channel with unlimited cap, got nil", i)
+		}
+		cancels = append(cancels, cancel)
+	}
+	for _, c := range cancels {
+		c()
+	}
+}

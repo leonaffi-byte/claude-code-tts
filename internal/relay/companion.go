@@ -47,6 +47,9 @@ func (h *CompanionHandler) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(http.StatusOK)
 	w.Write(companionHTML) //nolint:errcheck
 }
@@ -66,14 +69,18 @@ func (h *CompanionHandler) handleEvents(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	_, ch, cancel := h.hub.Subscribe()
+	if ch == nil {
+		http.Error(w, "too many connections", http.StatusServiceUnavailable)
+		return
+	}
+	defer cancel()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	_, ch, cancel := h.hub.Subscribe()
-	defer cancel()
 
 	for {
 		select {
@@ -97,17 +104,5 @@ func (h *CompanionHandler) handleClip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := strings.TrimPrefix(r.URL.Path, "/clips/")
-	if id == "" {
-		http.NotFound(w, r)
-		return
-	}
-
-	data, ok := h.store.Get(id)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	w.Header().Set("Content-Type", "audio/mpeg")
-	w.Write(data) //nolint:errcheck
+	serveClip(w, h.store, id)
 }

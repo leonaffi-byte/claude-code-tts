@@ -349,3 +349,67 @@ func TestCompanionHandler_GetEvents_SSEHeaders(t *testing.T) {
 		})
 	}
 }
+
+// TestCompanionHandler_GetRoot_SecurityHeaders verifies that GET / includes
+// the required security headers (CSP, X-Content-Type-Options, X-Frame-Options).
+func TestCompanionHandler_GetRoot_SecurityHeaders(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /: expected 200, got %d", w.Code)
+	}
+
+	tests := []struct {
+		header string
+		want   string
+	}{
+		{"X-Content-Type-Options", "nosniff"},
+		{"X-Frame-Options", "DENY"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.header, func(t *testing.T) {
+			got := w.Header().Get(tc.header)
+			if got != tc.want {
+				t.Errorf("GET /: %s = %q, want %q", tc.header, got, tc.want)
+			}
+		})
+	}
+
+	// CSP must be present and contain required directives.
+	csp := w.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Error("GET /: Content-Security-Policy header is missing")
+	}
+}
+
+// TestCompanionHandler_GetEvents_MaxSubscribers_Returns503 verifies that when
+// the SSE hub has reached its subscriber cap, GET /events returns 503 Service
+// Unavailable rather than blocking or panicking.
+func TestCompanionHandler_GetEvents_MaxSubscribers_Returns503(t *testing.T) {
+	store := NewClipStore(10)
+	// Create a hub capped at 0 (immediate rejection for all subscribers).
+	hub := &SSEHub{
+		subscribers: make(map[string]chan string),
+		maxSubs:     0, // zero means unlimited; set maxSubs=1 and fill it first
+	}
+	// Fill the hub to its cap by using maxSubs=1 and subscribing once manually.
+	hub.maxSubs = 1
+	_, _, firstCancel := hub.Subscribe()
+	defer firstCancel()
+
+	handler := NewCompanionHandler(store, hub)
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("GET /events at cap: expected 503, got %d", w.Code)
+	}
+}

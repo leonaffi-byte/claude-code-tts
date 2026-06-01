@@ -12,12 +12,16 @@ import (
 type SSEHub struct {
 	mu          sync.RWMutex
 	subscribers map[string]chan string
+	maxSubs     int // maximum concurrent subscribers; <= 0 means unlimited
 }
 
-// NewSSEHub creates a new, empty SSEHub ready to accept subscribers.
+// NewSSEHub creates a new SSEHub with a default maximum of 100 concurrent
+// subscribers. Pass a value <= 0 to disable the limit (not recommended in
+// production, as it allows unbounded resource consumption).
 func NewSSEHub() *SSEHub {
 	return &SSEHub{
 		subscribers: make(map[string]chan string),
+		maxSubs:     100,
 	}
 }
 
@@ -28,10 +32,14 @@ func NewSSEHub() *SSEHub {
 // The returned channel is buffered with capacity 4 to prevent the broadcaster
 // from stalling on a slow client.
 func (h *SSEHub) Subscribe() (id string, ch <-chan string, cancel func()) {
+	h.mu.Lock()
+	if h.maxSubs > 0 && len(h.subscribers) >= h.maxSubs {
+		h.mu.Unlock()
+		return "", nil, func() {}
+	}
+
 	id = uuid.New().String()
 	buffered := make(chan string, 4)
-
-	h.mu.Lock()
 	h.subscribers[id] = buffered
 	h.mu.Unlock()
 

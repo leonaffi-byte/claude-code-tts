@@ -86,7 +86,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.hub != nil {
-		h.hub.Broadcast("new-clip", fmt.Sprintf(`{"id":%q}`, id))
+		h.hub.Broadcast("new-clip", fmt.Sprintf(`{"id":"%s"}`, id))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -101,14 +101,20 @@ func (h *Handler) handleClip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := strings.TrimPrefix(r.URL.Path, "/clips/")
+	serveClip(w, h.store, id)
+}
+
+// serveClip writes the stored clip identified by id to w, or 404 if not found.
+// An empty id is treated as not found. Method checking is the caller's responsibility.
+func serveClip(w http.ResponseWriter, store *ClipStore, id string) {
 	if id == "" {
-		http.NotFound(w, r)
+		http.Error(w, "404 page not found", http.StatusNotFound)
 		return
 	}
 
-	data, ok := h.store.Get(id)
+	data, ok := store.Get(id)
 	if !ok {
-		http.NotFound(w, r)
+		http.Error(w, "404 page not found", http.StatusNotFound)
 		return
 	}
 
