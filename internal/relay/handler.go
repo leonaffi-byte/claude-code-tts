@@ -46,6 +46,8 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64 KB limit
+
 	var req ingestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -60,7 +62,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	audioBytes, err := h.synth.Synthesize(req.Text, tts.VoiceAlloy)
 	if err != nil {
 		logging.Error("synthesis failed: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "synthesis failed", http.StatusInternalServerError)
 		return
 	}
 

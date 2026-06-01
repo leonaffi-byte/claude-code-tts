@@ -6,6 +6,9 @@
 RELAY_URL="${CLAUDE_TTS_RELAY_URL:-http://127.0.0.1:8765}"
 
 {
+    # Gate: only run when explicitly enabled
+    [ "${CLAUDE_TTS_ENABLED}" = "true" ] || exit 0
+
     json=$(cat)
     msg=$(echo "$json" | jq -r '.stop_hook_message // .message // .content // ""' 2>/dev/null)
 

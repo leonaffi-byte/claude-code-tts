@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 // Server wraps an http.Server and the ClipStore so both can be shut down cleanly.
@@ -19,12 +20,15 @@ func NewServer(addr string, synth Synthesizer, maxClips int) (*Server, error) {
 	handler := NewHandler(synth, store)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ingest", handler.handleIngest)
-	mux.HandleFunc("/clips/", handler.handleClip)
+	mux.Handle("/ingest", handler)
+	mux.Handle("/clips/", handler)
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	return &Server{httpServer: srv, store: store}, nil

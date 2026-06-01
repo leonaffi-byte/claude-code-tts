@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/google/uuid"
@@ -72,13 +71,3 @@ func (s *ClipStore) Close() error {
 	return nil
 }
 
-// GetClip returns a Clip value for use by the HTTP handler layer. Returns an
-// error if the ID is not found. This wraps Get for callers that need a richer
-// return type rather than raw bytes.
-func (s *ClipStore) GetClip(id string) ([]byte, error) {
-	data, ok := s.Get(id)
-	if !ok {
-		return nil, fmt.Errorf("clip %q not found", id)
-	}
-	return data, nil
-}
