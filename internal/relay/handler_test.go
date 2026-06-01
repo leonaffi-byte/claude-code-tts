@@ -159,7 +159,7 @@ func TestHandler_GetClip_ExistingID_Returns200WithMP3Bytes(t *testing.T) {
 		t.Errorf("expected Content-Type audio/mpeg but got %q", ct)
 	}
 
-	if string(w.Body.Bytes()) != string(expectedAudio) {
+	if w.Body.String() != string(expectedAudio) {
 		t.Errorf("response body bytes mismatch: got %v, want %v", w.Body.Bytes(), expectedAudio)
 	}
 }

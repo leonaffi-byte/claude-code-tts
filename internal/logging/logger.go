@@ -100,7 +100,7 @@ func (l *Logger) rotate() error {
 
 	l.file.Close()
 	backupPath := l.filePath + "." + time.Now().Format("2006-01-02-150405")
-	os.Rename(l.filePath, backupPath)
+	os.Rename(l.filePath, backupPath) //nolint:errcheck
 
 	file, err := os.OpenFile(l.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -129,7 +129,7 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.rotate()
+	l.rotate() //nolint:errcheck
 
 	_, file, line, ok := runtime.Caller(2)
 	if ok {

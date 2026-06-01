@@ -139,9 +139,8 @@ func TestNewPlayer_TableDriven(t *testing.T) {
 			if player.isPlaying {
 				t.Error("expected isPlaying to be false initially")
 			}
-			// Verify mutex is initialized (can be locked)
-			player.mu.Lock()
-			player.mu.Unlock()
+			// Verify mutex is usable by checking player state once more.
+			_ = player.IsPlaying()
 		})
 	}
 }
