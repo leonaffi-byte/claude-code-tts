@@ -15,7 +15,9 @@ PIDFILE="${PIDFILE:-${HOME}/.claude/run/tts-relay.pid}"
 PLUGIN_ROOT="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${HOME}/.claude/plugins/claude-code-tts}}"
 RELAY_BIN="${PLUGIN_ROOT}/bin/tts-relay"
 
-# Health check: if pidfile exists and process is alive, relay is already running
+# Note: two sessions starting simultaneously can both pass the check above and
+# spawn duplicate relays. flock(1) would close this race but is not worth the
+# complexity for a local dev tool — the idempotency check handles the common case.
 if [ -f "$PIDFILE" ]; then
     pid="$(cat "$PIDFILE")"
     if kill -0 "$pid" 2>/dev/null; then
@@ -32,8 +34,9 @@ if [ ! -x "$RELAY_BIN" ]; then
 fi
 
 # Create run directory for pidfile and log (co-located with pidfile)
+# Mode 0700 prevents a permissive umask from making the directory world-readable.
 PIDFILE_DIR="$(dirname "$PIDFILE")"
-mkdir -p "$PIDFILE_DIR"
+mkdir -p -m 0700 "$PIDFILE_DIR"
 LOG="${PIDFILE_DIR}/tts-relay.log"
 
 # Start relay in background; fire-and-forget

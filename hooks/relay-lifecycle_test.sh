@@ -195,7 +195,7 @@ test_idempotent_when_already_running() {
     # Pidfile should still contain the original PID (not overwritten)
     _stored_pid="$(cat "$_pidfile" 2>/dev/null)"
     if [ "$_stored_pid" = "$$" ]; then
-        printf 'PASS  idempotent_running: pidfile unchanged (pid=$$)\n'
+        printf "PASS  idempotent_running: pidfile unchanged (pid=$$)\\n"
         PASS=$((PASS + 1))
     else
         printf 'FAIL  idempotent_running: pidfile was overwritten (got %s, want %d)\n' \

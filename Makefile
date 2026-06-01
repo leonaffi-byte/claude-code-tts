@@ -36,7 +36,7 @@ install: build
 	@mkdir -p $(INSTALL_DIR)/bin
 	@mkdir -p $(INSTALL_DIR)/.claude
 	@mkdir -p $(INSTALL_DIR)/hooks
-	@mkdir -p $(HOME)/.claude/run
+	@mkdir -p -m 0700 $(HOME)/.claude/run
 	@cp bin/$(BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(CLI_BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(RELAY_BINARY_NAME) $(INSTALL_DIR)/bin/
@@ -76,7 +76,7 @@ test:
 ## test-hooks: Run bash-based hook lifecycle tests
 test-hooks:
 	@echo "Running hook lifecycle tests..."
-	bash hooks/relay-lifecycle_test.sh
+	sh hooks/relay-lifecycle_test.sh
 
 ## test-coverage: Run tests with coverage
 test-coverage:
