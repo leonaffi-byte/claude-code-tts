@@ -23,6 +23,11 @@
       "event": "Stop",
       "type": "bash",
       "command": "${CLAUDE_PLUGIN_ROOT}/hooks/auto-speak.sh"
+    },
+    {
+      "event": "SessionStart",
+      "type": "bash",
+      "command": "${CLAUDE_PLUGIN_ROOT}/hooks/relay-start.sh"
     }
   ]
 }

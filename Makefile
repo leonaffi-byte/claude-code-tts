@@ -36,11 +36,16 @@ install: build
 	@mkdir -p $(INSTALL_DIR)/bin
 	@mkdir -p $(INSTALL_DIR)/.claude
 	@mkdir -p $(INSTALL_DIR)/hooks
+	@mkdir -p $(HOME)/.claude/run
 	@cp bin/$(BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(CLI_BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(RELAY_BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp hooks/auto-speak.sh $(INSTALL_DIR)/hooks/
 	@chmod +x $(INSTALL_DIR)/hooks/auto-speak.sh
+	@cp hooks/relay-start.sh $(INSTALL_DIR)/hooks/
+	@chmod +x $(INSTALL_DIR)/hooks/relay-start.sh
+	@cp hooks/relay-stop.sh $(INSTALL_DIR)/hooks/
+	@chmod +x $(INSTALL_DIR)/hooks/relay-stop.sh
 	@cp plugin.json $(INSTALL_DIR)/
 	@cp .mcp.json $(INSTALL_DIR)/
 	@cp .claude/settings.json $(INSTALL_DIR)/.claude/
