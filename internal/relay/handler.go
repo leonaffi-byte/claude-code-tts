@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -12,14 +13,25 @@ import (
 // Handler wires an HTTP mux for the relay endpoints.
 // It depends on a Synthesizer and a ClipStore, both injected at construction
 // time so tests can supply mocks without touching real network or disk.
+// The optional hub field, when non-nil, receives a broadcast after each
+// successful ingest so SSE subscribers are notified immediately.
 type Handler struct {
 	synth Synthesizer
 	store *ClipStore
+	hub   *SSEHub // nil if not wired; broadcast is skipped when nil
 }
 
 // NewHandler creates an HTTP handler backed by the given Synthesizer and store.
+// No SSE hub is wired; use NewHandlerWithHub when SSE broadcasts are needed.
 func NewHandler(synth Synthesizer, store *ClipStore) *Handler {
 	return &Handler{synth: synth, store: store}
+}
+
+// NewHandlerWithHub creates an HTTP handler backed by the given Synthesizer,
+// store, and SSEHub. After each successful ingest the handler broadcasts a
+// "new-clip" event to all hub subscribers.
+func NewHandlerWithHub(synth Synthesizer, store *ClipStore, hub *SSEHub) *Handler {
+	return &Handler{synth: synth, store: store, hub: hub}
 }
 
 // ServeHTTP implements http.Handler by routing requests to the correct handler.
@@ -71,6 +83,10 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		logging.Error("failed to store clip: %v", err)
 		http.Error(w, "failed to store clip", http.StatusInternalServerError)
 		return
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast("new-clip", fmt.Sprintf(`{"id":%q}`, id))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
