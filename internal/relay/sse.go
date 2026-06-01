@@ -53,19 +53,17 @@ func (h *SSEHub) Subscribe() (id string, ch <-chan string, cancel func()) {
 // The frame format is: "event: <event>\ndata: <data>\n\n"
 // Sending to a full channel is skipped (non-blocking select) to prevent
 // the broadcaster from stalling on a slow client.
+//
+// The read-lock is held throughout the sends. The sends are non-blocking
+// (select with default), so cancel() is only delayed by the time to drain
+// the loop — no deadlock, no send-to-closed-channel race.
 func (h *SSEHub) Broadcast(event string, data string) {
 	msg := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
 
-	// Copy subscriber channels under a read lock to avoid holding the lock
-	// during channel sends, which prevents deadlock with cancel().
 	h.mu.RLock()
-	channels := make([]chan string, 0, len(h.subscribers))
-	for _, ch := range h.subscribers {
-		channels = append(channels, ch)
-	}
-	h.mu.RUnlock()
+	defer h.mu.RUnlock()
 
-	for _, ch := range channels {
+	for _, ch := range h.subscribers {
 		select {
 		case ch <- msg:
 		default:
