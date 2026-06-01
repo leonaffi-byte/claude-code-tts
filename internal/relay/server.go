@@ -3,48 +3,89 @@ package relay
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 )
 
-// Server wraps an http.Server and the ClipStore so both can be shut down cleanly.
+// Server wraps the private ingest http.Server, the public companion http.Server,
+// and the ClipStore so all three can be shut down cleanly together.
 type Server struct {
-	httpServer *http.Server
-	store      *ClipStore
+	privateServer *http.Server
+	publicServer  *http.Server
+	store         *ClipStore
 }
 
-// NewServer wires together a ClipStore, Handler, and http.Server.
-// addr is the listen address (e.g. "127.0.0.1:8765"); the caller is responsible
-// for using a loopback address. maxClips <= 0 defaults to 10.
-func NewServer(addr string, synth Synthesizer, maxClips int) (*Server, error) {
+// NewServer wires the private ingest listener and the public companion listener.
+// privateAddr should be a loopback address (e.g. "127.0.0.1:8765").
+// publicAddr binds on all interfaces (e.g. ":8766") so companion pages on the LAN can connect.
+// maxClips <= 0 defaults to 10.
+func NewServer(privateAddr string, publicAddr string, synth Synthesizer, maxClips int) (*Server, error) {
 	store := NewClipStore(maxClips)
-	handler := NewHandler(synth, store)
+	hub := NewSSEHub()
 
-	mux := http.NewServeMux()
-	mux.Handle("/ingest", handler)
-	mux.Handle("/clips/", handler)
-
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
+	// Private ingest listener (loopback)
+	handler := NewHandlerWithHub(synth, store, hub)
+	privateMux := http.NewServeMux()
+	privateMux.Handle("/ingest", handler)
+	privateMux.Handle("/clips/", handler)
+	privateHTTP := &http.Server{
+		Addr:              privateAddr,
+		Handler:           privateMux,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
-	return &Server{httpServer: srv, store: store}, nil
+	// Public companion listener (all interfaces)
+	companion := NewCompanionHandler(store, hub)
+	publicMux := http.NewServeMux()
+	publicMux.Handle("/", companion)
+	publicHTTP := &http.Server{
+		Addr:              publicAddr,
+		Handler:           publicMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      0, // SSE connections are long-lived; no write deadline
+		IdleTimeout:       120 * time.Second,
+	}
+
+	return &Server{
+		privateServer: privateHTTP,
+		publicServer:  publicHTTP,
+		store:         store,
+	}, nil
 }
 
-// Start begins accepting connections. It blocks until the server is closed.
-// http.ErrServerClosed is returned on graceful shutdown and should be treated
-// as a normal exit condition by callers.
+// Start begins accepting connections on both the private and public listeners.
+// It blocks until one of the servers closes, then waits for the other.
+// http.ErrServerClosed is treated as a normal exit condition (graceful shutdown).
 func (s *Server) Start() error {
-	return s.httpServer.ListenAndServe()
+	errCh := make(chan error, 2)
+	go func() { errCh <- s.privateServer.ListenAndServe() }()
+	go func() { errCh <- s.publicServer.ListenAndServe() }()
+	err := <-errCh
+	if err == http.ErrServerClosed {
+		err = <-errCh
+	}
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }
 
-// Shutdown gracefully drains in-flight requests within the deadline imposed by
-// ctx, then frees clip-store resources.
+// Shutdown gracefully drains in-flight requests on both servers concurrently
+// within the deadline imposed by ctx, then frees clip-store resources.
 func (s *Server) Shutdown(ctx context.Context) error {
-	err := s.httpServer.Shutdown(ctx)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); errs[0] = s.privateServer.Shutdown(ctx) }()
+	go func() { defer wg.Done(); errs[1] = s.publicServer.Shutdown(ctx) }()
+	wg.Wait()
 	s.store.Close() //nolint:errcheck
-	return err
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
