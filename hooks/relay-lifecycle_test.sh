@@ -278,6 +278,90 @@ test_stop_kills_relay_and_removes_pidfile() {
     rm -rf "$_tmp"
 }
 
+# ── TEST 7: Missing relay binary — exits non-zero with stderr message ────────
+# Contract: relay-start.sh must exit non-zero and write to stderr when
+# CLAUDE_TTS_ENABLED=true but the relay binary does not exist.
+# We deliberately do NOT call make_mock_relay so the bin/ directory is absent.
+test_missing_relay_binary_exits_nonzero() {
+    _tmp="$(make_tmpdir)"
+    _pidfile="$_tmp/tts-relay.pid"
+    # No make_mock_relay — $PLUGIN_ROOT/bin/tts-relay does not exist
+
+    _stderr="$(CLAUDE_TTS_ENABLED="true" PLUGIN_ROOT="$_tmp" PIDFILE="$_pidfile" \
+        sh "$RELAY_START" 2>&1 1>/dev/null)"
+    _exit=$?
+
+    assert_fail        "missing_binary: exits non-zero"           "$_exit"
+    assert_file_absent "missing_binary: no pidfile created"       "$_pidfile"
+
+    # stderr must contain a meaningful message identifying the missing binary
+    if printf '%s' "$_stderr" | grep -q "relay"; then
+        printf 'PASS  missing_binary: stderr contains relay context\n'
+        PASS=$((PASS + 1))
+    else
+        printf 'FAIL  missing_binary: stderr was empty or unhelpful (%s)\n' "$_stderr"
+        FAIL=$((FAIL + 1))
+    fi
+
+    rm -rf "$_tmp"
+}
+
+# ── TEST 8: relay-stop.sh with no pidfile — exits 0 cleanly ──────────────────
+# Contract: relay-stop.sh treats the absence of a pidfile as "relay not running"
+# and exits 0 without error (idempotent stop).
+test_stop_no_pidfile_exits_zero() {
+    _tmp="$(make_tmpdir)"
+    _pidfile="$_tmp/tts-relay.pid"
+    # Explicitly ensure pidfile does not exist
+    rm -f "$_pidfile"
+
+    PIDFILE="$_pidfile" \
+        sh "$RELAY_STOP"
+    _exit=$?
+
+    assert_pass "stop_no_pidfile: exits 0" "$_exit"
+
+    rm -rf "$_tmp"
+}
+
+# ── TEST 9: relay-stop.sh with stale pidfile — exits 0, removes pidfile ──────
+# Contract: relay-stop.sh detects that the stored PID is dead, removes the
+# stale pidfile, and exits 0. PID 99999999 is used as a reliably dead PID.
+test_stop_stale_pidfile_exits_zero_and_removes_file() {
+    _tmp="$(make_tmpdir)"
+    _pidfile="$_tmp/tts-relay.pid"
+
+    # Write a stale pidfile — this PID will never be alive
+    printf '99999999\n' > "$_pidfile"
+
+    PIDFILE="$_pidfile" \
+        sh "$RELAY_STOP"
+    _exit=$?
+
+    assert_pass        "stop_stale_pidfile: exits 0"         "$_exit"
+    assert_file_absent "stop_stale_pidfile: pidfile removed" "$_pidfile"
+
+    rm -rf "$_tmp"
+}
+
+# ── TEST 10: CLAUDE_TTS_ENABLED=1 (numeric) — treated as disabled ────────────
+# Contract: only the literal string "true" enables the relay.
+# Setting CLAUDE_TTS_ENABLED=1 must not start the relay — exits 0, no pidfile.
+test_noop_when_enabled_numeric_one() {
+    _tmp="$(make_tmpdir)"
+    _pidfile="$_tmp/tts-relay.pid"
+    make_mock_relay "$_tmp"
+
+    CLAUDE_TTS_ENABLED="1" PLUGIN_ROOT="$_tmp" PIDFILE="$_pidfile" \
+        sh "$RELAY_START"
+    _exit=$?
+
+    assert_pass        "noop_enabled_numeric_1: exits 0"     "$_exit"
+    assert_file_absent "noop_enabled_numeric_1: no pidfile"  "$_pidfile"
+
+    rm -rf "$_tmp"
+}
+
 # ── Run all tests ─────────────────────────────────────────────────────────────
 
 printf '\n=== relay-lifecycle tests ===\n\n'
@@ -288,6 +372,10 @@ test_starts_relay_when_enabled_no_pidfile
 test_idempotent_when_already_running
 test_stale_pidfile_cleaned_and_relay_started
 test_stop_kills_relay_and_removes_pidfile
+test_missing_relay_binary_exits_nonzero
+test_stop_no_pidfile_exits_zero
+test_stop_stale_pidfile_exits_zero_and_removes_file
+test_noop_when_enabled_numeric_one
 
 printf '\n=== Results: %d passed, %d failed ===\n\n' "$PASS" "$FAIL"
 
