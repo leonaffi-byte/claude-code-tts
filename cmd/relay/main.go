@@ -35,9 +35,15 @@ func main() {
 	// Bind to loopback only — never expose on 0.0.0.0.
 	addr := "127.0.0.1:" + port
 
+	publicPort := os.Getenv("PUBLIC_PORT")
+	if publicPort == "" {
+		publicPort = "8766"
+	}
+	publicAddr := ":" + publicPort
+
 	synth := tts.NewClient()
 
-	srv, err := relay.NewServer(addr, synth, 10)
+	srv, err := relay.NewServer(addr, publicAddr, synth, 10)
 	if err != nil {
 		logging.Fatal("failed to create relay server: %v", err)
 	}
@@ -56,7 +62,8 @@ func main() {
 		os.Exit(0)
 	}()
 
-	logging.Info("relay listening on %s", addr)
+	logging.Info("relay private listener: %s", addr)
+	logging.Info("relay public companion: http://localhost:%s/", publicPort)
 	if err := srv.Start(); err != nil && err != http.ErrServerClosed {
 		logging.Fatal("relay server error: %v", err)
 	}
