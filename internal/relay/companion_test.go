@@ -22,7 +22,7 @@ import (
 func TestCompanionHandler_GetRoot_Returns200WithHTML(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -49,7 +49,7 @@ func TestCompanionHandler_GetRoot_Returns200WithHTML(t *testing.T) {
 func TestCompanionHandler_GetEvents_Returns200WithSSEContentType(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
@@ -87,7 +87,7 @@ func TestCompanionHandler_GetEvents_Returns200WithSSEContentType(t *testing.T) {
 func TestCompanionHandler_GetEvents_IncrementsSubscriberCount(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
@@ -117,7 +117,7 @@ func TestCompanionHandler_GetEvents_IncrementsSubscriberCount(t *testing.T) {
 func TestCompanionHandler_GetEvents_BroadcastArrivesOnResponse(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
@@ -157,7 +157,7 @@ func TestCompanionHandler_GetClip_KnownID_Returns200WithMP3Bytes(t *testing.T) {
 	}
 
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/"+id, nil)
 	w := httptest.NewRecorder()
@@ -183,7 +183,7 @@ func TestCompanionHandler_GetClip_KnownID_Returns200WithMP3Bytes(t *testing.T) {
 func TestCompanionHandler_GetClip_UnknownID_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/unknown-id", nil)
 	w := httptest.NewRecorder()
@@ -200,7 +200,7 @@ func TestCompanionHandler_GetClip_UnknownID_Returns404(t *testing.T) {
 func TestCompanionHandler_GetClips_EmptyID_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/", nil)
 	w := httptest.NewRecorder()
@@ -224,7 +224,7 @@ func TestCompanionHandler_NonGetToRoot_Returns405(t *testing.T) {
 
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
@@ -262,7 +262,7 @@ func (r *nonFlusherRecorder) Write(b []byte) (int, error) { return r.rec.Write(b
 func TestCompanionHandler_GetEvents_NonFlusher_Returns500(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/events", nil)
 	inner := httptest.NewRecorder()
@@ -289,7 +289,7 @@ func TestCompanionHandler_NonGetToEvents_Returns405(t *testing.T) {
 
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
@@ -311,7 +311,7 @@ func TestCompanionHandler_NonGetToEvents_Returns405(t *testing.T) {
 func TestCompanionHandler_GetEvents_SSEHeaders(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
@@ -355,7 +355,7 @@ func TestCompanionHandler_GetEvents_SSEHeaders(t *testing.T) {
 func TestCompanionHandler_GetRoot_SecurityHeaders(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -403,7 +403,7 @@ func TestCompanionHandler_GetEvents_MaxSubscribers_Returns503(t *testing.T) {
 	_, _, firstCancel := hub.Subscribe()
 	defer firstCancel()
 
-	handler := NewCompanionHandler(store, hub)
+	handler := NewCompanionHandler(store, hub, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/events", nil)
 	w := httptest.NewRecorder()
@@ -411,5 +411,45 @@ func TestCompanionHandler_GetEvents_MaxSubscribers_Returns503(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("GET /events at cap: expected 503, got %d", w.Code)
+	}
+}
+
+// TestCompanionHandler_GetManifest_Returns200WithJSON verifies that
+// GET /manifest.json returns 200 with Content-Type application/json.
+func TestCompanionHandler_GetManifest_Returns200WithJSON(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/manifest.json", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /manifest.json: expected 200, got %d", w.Code)
+	}
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("GET /manifest.json: expected Content-Type application/json, got %q", ct)
+	}
+}
+
+// TestCompanionHandler_GetManifest_StartURLContainsToken verifies that the
+// manifest start_url embeds the token so PWA installs reload authenticated.
+func TestCompanionHandler_GetManifest_StartURLContainsToken(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, "mytoken")
+
+	req := httptest.NewRequest(http.MethodGet, "/manifest.json", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "mytoken") {
+		t.Errorf("GET /manifest.json: expected body to contain token %q, got: %s", "mytoken", body)
 	}
 }
