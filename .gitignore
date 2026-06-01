@@ -38,3 +38,6 @@ go.work
 
 # Debug logs
 firebase-debug.log
+
+# Orchestrator scratch (never commit)
+.orchestrator/
