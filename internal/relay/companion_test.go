@@ -453,3 +453,61 @@ func TestCompanionHandler_GetManifest_StartURLContainsToken(t *testing.T) {
 		t.Errorf("GET /manifest.json: expected body to contain token %q, got: %s", "mytoken", body)
 	}
 }
+
+// TestCompanionHandler_GetManifest_URLSpecialCharsInToken verifies that a token
+// containing URL-special characters (e.g. '+', '=', '/') is safely embedded in
+// the manifest JSON without breaking the JSON structure.
+func TestCompanionHandler_GetManifest_URLSpecialCharsInToken(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	// Token with characters that have special meaning in URLs and JSON.
+	specialToken := "tok+en/with=special&chars"
+	handler := NewCompanionHandler(store, hub, specialToken)
+
+	req := httptest.NewRequest(http.MethodGet, "/manifest.json", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /manifest.json with special-char token: expected 200, got %d", w.Code)
+	}
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("GET /manifest.json: expected Content-Type application/json, got %q", ct)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, specialToken) {
+		t.Errorf("manifest body does not contain the special-char token %q; body: %s", specialToken, body)
+	}
+}
+
+// TestCompanionHandler_GetManifest_EmptyToken verifies that GET /manifest.json
+// still returns valid JSON when the token is an empty string (e.g. during
+// development without auth configured).
+func TestCompanionHandler_GetManifest_EmptyToken(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/manifest.json", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /manifest.json with empty token: expected 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if len(body) == 0 {
+		t.Error("GET /manifest.json with empty token: expected non-empty body")
+	}
+
+	// Body must at least contain valid JSON braces.
+	if !strings.Contains(body, "{") || !strings.Contains(body, "}") {
+		t.Errorf("GET /manifest.json with empty token: body does not look like JSON: %s", body)
+	}
+}

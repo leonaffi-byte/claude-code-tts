@@ -396,3 +396,61 @@ func TestHandler_PostRotateToken_WrongMethod_Returns405(t *testing.T) {
 		t.Errorf("GET /rotate-token: expected 405, got %d", w.Code)
 	}
 }
+
+// TestHandler_PostRotateToken_NilTokenStore_Returns500 verifies that calling
+// POST /rotate-token when the handler was constructed with a nil TokenStore
+// returns 500 rather than panicking. NewHandler documents that ts may be nil.
+func TestHandler_PostRotateToken_NilTokenStore_Returns500(t *testing.T) {
+	synth := &mockSynthesizer{}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(synth, store, hub) // no TokenStore wired
+
+	req := httptest.NewRequest(http.MethodPost, "/rotate-token", nil)
+	w := httptest.NewRecorder()
+
+	// Must not panic.
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("POST /rotate-token with nil TokenStore: expected 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_PostIngest_BroadcastsNewClipEventToHub verifies that after a
+// successful synthesis and store, the Handler broadcasts a "new-clip" SSE event
+// to the hub. This ensures companion clients receive real-time notifications.
+func TestHandler_PostIngest_BroadcastsNewClipEventToHub(t *testing.T) {
+	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(mock, store, hub)
+
+	// Subscribe before the ingest so we receive the broadcast.
+	_, ch, cancel := hub.Subscribe()
+	defer cancel()
+
+	body := bytes.NewBufferString(`{"text": "broadcast me"}`)
+	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from ingest, got %d", w.Code)
+	}
+
+	// Drain the channel; the broadcast is non-blocking so it may be buffered.
+	select {
+	case msg, ok := <-ch:
+		if !ok {
+			t.Fatal("subscriber channel was closed before receiving a broadcast")
+		}
+		if !strings.Contains(msg, "new-clip") {
+			t.Errorf("broadcast message %q does not contain expected event %q", msg, "new-clip")
+		}
+	default:
+		t.Error("hub received no broadcast after successful ingest")
+	}
+}

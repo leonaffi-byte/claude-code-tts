@@ -56,3 +56,19 @@ func TestPublicServer_MissingToken_Returns404(t *testing.T) {
 		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
+
+// TestPublicServer_Shutdown_NeverStarted_ReturnsNil verifies that calling
+// Shutdown on a PublicServer that was never started (httpServer is nil)
+// returns nil cleanly without panicking.
+func TestPublicServer_Shutdown_NeverStarted_ReturnsNil(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	companion := NewCompanionHandler(store, hub, "testtoken")
+	ps := NewPublicServer("testtoken", companion)
+
+	// ps.Serve() was never called — httpServer is nil.
+	err := ps.Shutdown(t.Context())
+	if err != nil {
+		t.Errorf("Shutdown on never-started server: expected nil error, got %v", err)
+	}
+}

@@ -198,3 +198,131 @@ func TestTokenStore_Rotate_ChangesToken(t *testing.T) {
 		t.Errorf("reloaded token %q does not match rotated token %q", reloaded, rotated)
 	}
 }
+
+// TestTokenStore_LoadOrGenerate_EmptyFileGeneratesNewToken verifies that when
+// the token file exists but is empty, LoadOrGenerate treats it as missing and
+// generates a fresh token, persisting it back to disk.
+func TestTokenStore_LoadOrGenerate_EmptyFileGeneratesNewToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+
+	// Create an empty file (zero bytes).
+	if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
+		t.Fatalf("failed to create empty token file: %v", err)
+	}
+
+	store := NewTokenStore(path)
+	token, err := store.LoadOrGenerate()
+
+	if err != nil {
+		t.Fatalf("LoadOrGenerate returned unexpected error: %v", err)
+	}
+	if token == "" {
+		t.Error("LoadOrGenerate returned an empty token for an empty file")
+	}
+
+	// Confirm the new token was persisted.
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("could not read token file after LoadOrGenerate: %v", readErr)
+	}
+	if string(data) != token {
+		t.Errorf("persisted token %q does not match returned token %q", string(data), token)
+	}
+}
+
+// TestTokenStore_LoadOrGenerate_WhitespaceOnlyFileGeneratesNewToken verifies
+// that a file containing only whitespace (spaces, newlines) is treated as
+// missing and causes a new token to be generated.
+func TestTokenStore_LoadOrGenerate_WhitespaceOnlyFileGeneratesNewToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+
+	if err := os.WriteFile(path, []byte("   \n\t  \n"), 0o600); err != nil {
+		t.Fatalf("failed to create whitespace token file: %v", err)
+	}
+
+	store := NewTokenStore(path)
+	token, err := store.LoadOrGenerate()
+
+	if err != nil {
+		t.Fatalf("LoadOrGenerate returned unexpected error: %v", err)
+	}
+	if token == "" {
+		t.Error("LoadOrGenerate returned an empty token for a whitespace-only file")
+	}
+	if len(token) < 8 {
+		t.Errorf("generated token %q looks too short to be a real token", token)
+	}
+}
+
+// TestTokenStore_Rotate_WithoutPriorLoadOrGenerate verifies that Rotate()
+// succeeds even when LoadOrGenerate has never been called, i.e. there is no
+// pre-existing token file.
+func TestTokenStore_Rotate_WithoutPriorLoadOrGenerate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+
+	store := NewTokenStore(path)
+	token, err := store.Rotate()
+
+	if err != nil {
+		t.Fatalf("Rotate (cold start) returned unexpected error: %v", err)
+	}
+	if token == "" {
+		t.Error("Rotate returned an empty token on a cold start")
+	}
+
+	// The token file must now exist with the returned value.
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("token file not found after cold-start Rotate: %v", readErr)
+	}
+	if string(data) != token {
+		t.Errorf("persisted token %q does not match Rotate return value %q", string(data), token)
+	}
+}
+
+// TestAuthMiddleware_ExactTokenPath_ForwardsAsRoot verifies that a request to
+// /<token> (exact match, no trailing slash) is forwarded to the inner handler
+// with path "/" rather than being rejected.
+func TestAuthMiddleware_ExactTokenPath_ForwardsAsRoot(t *testing.T) {
+	const token = "abc123"
+	inner := &handlerSpy{}
+	mw := NewAuthMiddleware(token, inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/"+token, nil)
+	w := httptest.NewRecorder()
+
+	mw.ServeHTTP(w, req)
+
+	if !inner.called {
+		t.Error("inner handler was not called for exact token path (no trailing slash)")
+	}
+	if inner.seenPath != "/" {
+		t.Errorf("inner handler saw path %q, want %q", inner.seenPath, "/")
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for exact token path, got %d", w.Code)
+	}
+}
+
+// TestAuthMiddleware_NestedPath_ForwardsCorrectly verifies that a deeply nested
+// path like /<token>/foo/bar is forwarded as /foo/bar to the inner handler.
+func TestAuthMiddleware_NestedPath_ForwardsCorrectly(t *testing.T) {
+	const token = "abc123"
+	inner := &handlerSpy{}
+	mw := NewAuthMiddleware(token, inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/"+token+"/foo/bar", nil)
+	w := httptest.NewRecorder()
+
+	mw.ServeHTTP(w, req)
+
+	if !inner.called {
+		t.Fatal("inner handler was not called for nested token path")
+	}
+	if inner.seenPath != "/foo/bar" {
+		t.Errorf("inner handler saw path %q, want %q", inner.seenPath, "/foo/bar")
+	}
+}
