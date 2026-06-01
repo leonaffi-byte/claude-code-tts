@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -313,13 +314,11 @@ func TestHandler_UnknownRoute_Returns404(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Hub integration — NewHandler wires hub to POST /ingest
+// Hub integration
 // ---------------------------------------------------------------------------
 
 // TestHandler_PostIngest_BroadcastsToHub verifies that a successful POST
-// /ingest via NewHandler sends a "new-clip" SSE event to any
-// subscriber on the hub. The test subscribes to the hub, issues the request,
-// then waits up to 100 ms for the message to arrive on the subscriber channel.
+// /ingest sends a "new-clip" SSE event to any subscriber on the hub.
 func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
@@ -340,9 +339,6 @@ func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
 
-	// The ingest handler broadcasts synchronously before returning, so the
-	// message should already be in the buffered channel. Use a 100 ms timeout
-	// as a safety net.
 	select {
 	case msg := <-ch:
 		if !strings.Contains(msg, "event: new-clip\n") {
@@ -353,5 +349,50 @@ func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("timed out waiting for hub broadcast after POST /ingest")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /rotate-token
+// ---------------------------------------------------------------------------
+
+func TestHandler_PostRotateToken_Returns200WithNewToken(t *testing.T) {
+	dir := t.TempDir()
+	ts := NewTokenStore(filepath.Join(dir, "token"))
+	synth := &mockSynthesizer{}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(synth, store, hub).WithTokenStore(ts)
+
+	req := httptest.NewRequest(http.MethodPost, "/rotate-token", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("POST /rotate-token: expected 200, got %d", w.Code)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["token"] == "" {
+		t.Error("expected non-empty token in response")
+	}
+}
+
+func TestHandler_PostRotateToken_WrongMethod_Returns405(t *testing.T) {
+	dir := t.TempDir()
+	ts := NewTokenStore(filepath.Join(dir, "token"))
+	synth := &mockSynthesizer{}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(synth, store, hub).WithTokenStore(ts)
+
+	req := httptest.NewRequest(http.MethodGet, "/rotate-token", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /rotate-token: expected 405, got %d", w.Code)
 	}
 }

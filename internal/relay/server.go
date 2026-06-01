@@ -13,10 +13,11 @@ type Server struct {
 	handler    *Handler
 }
 
-// NewServer wires together a Handler and http.Server using the provided store
-// and hub. addr is the listen address (e.g. "127.0.0.1:8765"); the caller is
-// responsible for using a loopback address and creating the store and hub so
-// they can be shared with the CompanionHandler.
+// NewServer wires together a Handler and http.Server using the provided store,
+// hub, and token store. addr is the listen address (e.g. "127.0.0.1:8765"); the
+// caller is responsible for using a loopback address and creating the store and
+// hub so they can be shared with the CompanionHandler. ts may be nil if token
+// rotation is not required.
 func NewServer(addr string, synth Synthesizer, store *ClipStore, hub *SSEHub) (*Server, error) {
 	handler := NewHandler(synth, store, hub)
 

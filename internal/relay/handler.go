@@ -10,8 +10,9 @@ import (
 )
 
 // Handler wires an HTTP mux for the relay endpoints.
-// It depends on a Synthesizer, ClipStore, and SSEHub, all injected at
-// construction time so tests can supply mocks without touching real network or disk.
+// It depends on a Synthesizer, ClipStore, SSEHub, and optional TokenStore, all
+// injected at construction time so tests can supply mocks without touching real
+// network or disk.
 type Handler struct {
 	synth     Synthesizer
 	store     *ClipStore
