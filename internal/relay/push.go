@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 )
 
@@ -107,4 +108,39 @@ func (ps *PushSender) Send(clipID, clipURL string) error {
 type PushSenderIface interface {
 	AddSubscription(sub PushSubscription)
 	Send(clipID, clipURL string) error
+}
+
+// WebPushTransport delivers Web Push notifications using the VAPID protocol.
+// It holds a VAPIDStore reference so it can access keys without storing them
+// as plain strings in memory longer than necessary.
+type WebPushTransport struct {
+	vapid *VAPIDStore
+}
+
+// NewWebPushTransport creates a WebPushTransport backed by the given VAPIDStore.
+func NewWebPushTransport(vapid *VAPIDStore) *WebPushTransport {
+	return &WebPushTransport{vapid: vapid}
+}
+
+// Send delivers payload to sub using VAPID-authenticated Web Push.
+// It returns the HTTP status code from the push service (e.g. 201, 410).
+func (t *WebPushTransport) Send(sub PushSubscription, payload []byte) (int, error) {
+	s := &webpush.Subscription{
+		Endpoint: sub.Endpoint,
+		Keys: webpush.Keys{
+			P256dh: sub.Keys.P256DH,
+			Auth:   sub.Keys.Auth,
+		},
+	}
+
+	resp, err := webpush.SendNotification(payload, s, &webpush.Options{
+		VAPIDPublicKey:  t.vapid.PublicKey(),
+		VAPIDPrivateKey: t.vapid.PrivateKey(),
+		TTL:             60,
+	})
+	if err != nil {
+		return 0, err
+	}
+	resp.Body.Close() //nolint:errcheck
+	return resp.StatusCode, nil
 }
