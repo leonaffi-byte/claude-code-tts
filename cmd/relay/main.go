@@ -88,7 +88,7 @@ func main() {
 			return relay.PrintQR(os.Stdout, baseURL, newToken)
 		}).
 		WithPushSender(ps).
-		WithClipBaseURL(baseURL)
+		WithClipBaseURL(baseURL + "/" + token)
 
 	companion := relay.NewCompanionHandler(store, hub, ts).
 		WithPushSender(ps).

@@ -40,9 +40,12 @@ self.addEventListener('notificationclick', function (event) {
         windowClients[i].postMessage({ type: 'play-clip', clipId: clipId, clipURL: clipURL });
         return windowClients[i].focus();
       }
-      // No open window — open companion root; the page will handle the
-      // play-clip message when it loads via BroadcastChannel or similar.
-      return clients.openWindow('./');
+      // No open window — open companion with the clip encoded in the URL so
+      // the page can start playing immediately on load without needing a
+      // separate postMessage handoff.
+      var query = '?autoplay=' + encodeURIComponent(clipId);
+      if (clipURL) { query += '&clipURL=' + encodeURIComponent(clipURL); }
+      return clients.openWindow('./' + query);
     })
   );
 });

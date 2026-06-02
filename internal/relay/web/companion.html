@@ -99,7 +99,9 @@
       // 0. Service worker registration (runs immediately, no gesture needed)
       // ---------------------------------------------------------------
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        // Use relative paths so the SW registers under /<token>/ rather than
+        // the origin root, which would be rejected by the auth middleware.
+        navigator.serviceWorker.register('./sw.js', { scope: './' })
           .catch(function (err) {
             console.warn('TTS: SW registration failed:', err);
           });
@@ -125,6 +127,25 @@
           }
         });
       }
+
+      // ---------------------------------------------------------------
+      // 0b. Autoplay on notification tap (app was closed, SW opened us)
+      //     The push notification click handler appends ?autoplay=<id>
+      //     so we can start playing immediately on page load.
+      // ---------------------------------------------------------------
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var autoId = params.get('autoplay');
+        if (!autoId) { return; }
+        // Notification tap counts as a user gesture on Android Chrome,
+        // so audio.play() is permitted without an explicit tap.
+        unlocked = true;
+        unlockBtn.disabled = true;
+        unlockBtn.textContent = 'Audio enabled';
+        setupMediaSession();
+        connectSSE();
+        playClip(autoId);
+      }());
 
       // ---------------------------------------------------------------
       // 1. Audio unlock gate
@@ -156,7 +177,7 @@
       //    SSE reconnect is handled automatically by the browser.
       // ---------------------------------------------------------------
       function connectSSE() {
-        var es = new EventSource('/events');
+        var es = new EventSource('events');
 
         es.addEventListener('new-clip', function (e) {
           var data;
@@ -193,7 +214,7 @@
           if (permission !== 'granted') { return; }
 
           navigator.serviceWorker.ready.then(function (reg) {
-            fetch('/push/vapid-public-key')
+            fetch('push/vapid-public-key')
               .then(function (r) { return r.text(); })
               .then(function (rawKey) {
                 var appServerKey = urlBase64ToUint8Array(rawKey.trim());
@@ -203,7 +224,7 @@
                 });
               })
               .then(function (sub) {
-                return fetch('/push/subscribe', {
+                return fetch('push/subscribe', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(sub)
@@ -230,7 +251,7 @@
       function playClip(id) {
         setStatus('Loading: ' + id, '');
 
-        fetch('/clips/' + id)
+        fetch('clips/' + id)
           .then(function (r) {
             if (!r.ok) { throw new Error('HTTP ' + r.status); }
             return r.blob();
