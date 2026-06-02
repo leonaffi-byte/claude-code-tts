@@ -69,7 +69,7 @@ func (ps *PushSender) Subscriptions() []PushSubscription {
 func (ps *PushSender) Send(clipID, clipURL string) error {
 	payload, err := json.Marshal(map[string]string{
 		"clipId":  clipID,
-		"clipUrl": clipURL,
+		"clipURL": clipURL,
 	})
 	if err != nil {
 		logging.Error("push: failed to marshal payload: %v", err)

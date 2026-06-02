@@ -96,8 +96,8 @@ func TestPushSender_Send_CallsTransportWithPayloadContainingClipIDAndURL(t *test
 	if body["clipId"] != clipID {
 		t.Errorf("payload.clipId = %v, want %q", body["clipId"], clipID)
 	}
-	if body["clipUrl"] != clipURL {
-		t.Errorf("payload.clipUrl = %v, want %q", body["clipUrl"], clipURL)
+	if body["clipURL"] != clipURL {
+		t.Errorf("payload.clipURL = %v, want %q", body["clipURL"], clipURL)
 	}
 }
 
