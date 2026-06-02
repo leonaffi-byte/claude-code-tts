@@ -38,8 +38,7 @@ self.addEventListener('notificationclick', function (event) {
       // Post to any already-open companion window so it plays immediately.
       for (var i = 0; i < windowClients.length; i++) {
         windowClients[i].postMessage({ type: 'play-clip', clipId: clipId, clipURL: clipURL });
-        windowClients[i].focus();
-        return;
+        return windowClients[i].focus();
       }
       // No open window — open companion root; the page will handle the
       // play-clip message when it loads via BroadcastChannel or similar.

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -500,8 +501,9 @@ type sendCall struct {
 	clipURL string
 }
 
-func (m *mockPushSender) AddSubscription(sub PushSubscription) {
+func (m *mockPushSender) AddSubscription(sub PushSubscription) bool {
 	m.addedSubs = append(m.addedSubs, sub)
+	return true
 }
 
 func (m *mockPushSender) Send(clipID, clipURL string) error {
@@ -511,7 +513,7 @@ func (m *mockPushSender) Send(clipID, clipURL string) error {
 
 // TestCompanionHandler_PostPushSubscribe_StoresSubscription verifies that a
 // valid POST /push/subscribe body registers the subscription with the push
-// sender and returns 200 OK.
+// sender and returns 201 Created.
 func TestCompanionHandler_PostPushSubscribe_StoresSubscription(t *testing.T) {
 	store := NewClipStore(10)
 	hub := NewSSEHub()
@@ -526,8 +528,8 @@ func TestCompanionHandler_PostPushSubscribe_StoresSubscription(t *testing.T) {
 
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("POST /push/subscribe: expected 200, got %d — body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Errorf("POST /push/subscribe: expected 201, got %d — body: %s", w.Code, w.Body.String())
 	}
 
 	if len(mockPS.addedSubs) != 1 {
@@ -723,6 +725,71 @@ func TestCompanionHandler_GetSWJS_ServiceWorkerAllowedHeader(t *testing.T) {
 	swAllowed := w.Header().Get("Service-Worker-Allowed")
 	if swAllowed != "/" {
 		t.Errorf("GET /sw.js: Service-Worker-Allowed = %q, want %q", swAllowed, "/")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SSRF prevention — non-HTTPS endpoint rejected
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_PostPushSubscribe_NonHTTPSEndpoint_Returns400 verifies
+// that a POST /push/subscribe with an http:// endpoint is rejected with 400 to
+// prevent SSRF attacks where the relay would POST to an internal host.
+func TestCompanionHandler_PostPushSubscribe_NonHTTPSEndpoint_Returns400(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	transport := newMockTransport()
+	ps := NewPushSender(transport)
+	handler := NewCompanionHandler(store, hub, nil).WithPushSender(ps)
+
+	body := strings.NewReader(`{"endpoint":"http://127.0.0.1:8765/ingest","keys":{"p256dh":"FAKE","auth":"FAKE"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("POST /push/subscribe with http:// endpoint: expected 400, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Subscription cap — 429 when cap is reached
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_PostPushSubscribe_CapReached_Returns429 verifies that
+// when the subscription cap is reached, subsequent registrations are rejected
+// with 429 Too Many Requests to prevent memory exhaustion.
+func TestCompanionHandler_PostPushSubscribe_CapReached_Returns429(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	transport := newMockTransport()
+	ps := NewPushSender(transport)
+	ps.maxSubs = 2 // set low cap for test
+
+	handler := NewCompanionHandler(store, hub, nil).WithPushSender(ps)
+
+	for i := 0; i < 2; i++ {
+		body := strings.NewReader(fmt.Sprintf(`{"endpoint":"https://push.example.com/%d","keys":{"p256dh":"F","auth":"A"}}`, i))
+		req := httptest.NewRequest(http.MethodPost, "/push/subscribe", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("registration %d: expected 201, got %d", i, w.Code)
+		}
+	}
+
+	// Third registration must be rejected.
+	body := strings.NewReader(`{"endpoint":"https://push.example.com/overflow","keys":{"p256dh":"F","auth":"A"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 when cap reached, got %d", w.Code)
 	}
 }
 

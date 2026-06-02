@@ -30,6 +30,8 @@ type PushSubscription struct {
 	} `json:"keys"`
 }
 
+const defaultMaxSubscriptions = 100
+
 // PushSender stores subscriptions and delivers push notifications via an
 // injected PushTransport. It is safe for concurrent use.
 //
@@ -39,18 +41,24 @@ type PushSender struct {
 	mu            sync.Mutex
 	transport     PushTransport
 	subscriptions []PushSubscription
+	maxSubs       int
 }
 
 // NewPushSender creates a PushSender backed by the given transport.
 func NewPushSender(t PushTransport) *PushSender {
-	return &PushSender{transport: t}
+	return &PushSender{transport: t, maxSubs: defaultMaxSubscriptions}
 }
 
-// AddSubscription registers a new subscription with the sender.
-func (ps *PushSender) AddSubscription(sub PushSubscription) {
+// AddSubscription registers a new subscription. Returns false when the cap is
+// reached so the caller can respond with 429 Too Many Requests.
+func (ps *PushSender) AddSubscription(sub PushSubscription) bool {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+	if ps.maxSubs > 0 && len(ps.subscriptions) >= ps.maxSubs {
+		return false
+	}
 	ps.subscriptions = append(ps.subscriptions, sub)
+	return true
 }
 
 // Subscriptions returns a copy of the current subscription list.
@@ -81,24 +89,38 @@ func (ps *PushSender) Send(clipID, clipURL string) error {
 	copy(subs, ps.subscriptions)
 	ps.mu.Unlock()
 
-	var keep []PushSubscription
+	// Collect endpoints that returned 410 Gone.
+	var gone []string
 	for _, sub := range subs {
 		code, sendErr := ps.transport.Send(sub, payload)
 		if sendErr != nil {
 			logging.Error("push: transport error for subscription %q: %v", sub.Endpoint, sendErr)
-			keep = append(keep, sub)
 			continue
 		}
 		if code == http.StatusGone {
 			logging.Error("push: subscription %q returned 410 Gone — pruning", sub.Endpoint)
-			continue
+			gone = append(gone, sub.Endpoint)
 		}
-		keep = append(keep, sub)
 	}
 
-	ps.mu.Lock()
-	ps.subscriptions = keep
-	ps.mu.Unlock()
+	// Prune 410 endpoints from the live slice without dropping any that were
+	// added concurrently during the transport calls above.
+	if len(gone) > 0 {
+		goneSet := make(map[string]bool, len(gone))
+		for _, ep := range gone {
+			goneSet[ep] = true
+		}
+		ps.mu.Lock()
+		filtered := ps.subscriptions[:0]
+		for _, s := range ps.subscriptions {
+			if !goneSet[s.Endpoint] {
+				filtered = append(filtered, s)
+			}
+		}
+		ps.subscriptions = filtered
+		ps.mu.Unlock()
+	}
+
 	return nil
 }
 
@@ -106,7 +128,7 @@ func (ps *PushSender) Send(clipID, clipURL string) error {
 // used by Handler and CompanionHandler. This keeps both handlers decoupled from
 // the concrete PushSender so tests can supply a mock.
 type PushSenderIface interface {
-	AddSubscription(sub PushSubscription)
+	AddSubscription(sub PushSubscription) bool
 	Send(clipID, clipURL string) error
 }
 

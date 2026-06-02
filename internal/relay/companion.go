@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
@@ -164,7 +165,8 @@ func (h *CompanionHandler) serveManifest(w http.ResponseWriter, r *http.Request)
 // handlePushSubscribe processes POST /push/subscribe: stores the Web Push
 // subscription from the phone so future clips trigger a background push.
 // Returns 405 for non-POST, 503 when no PushSender is wired, 400 for invalid
-// JSON or missing endpoint, and 200 on success.
+// JSON, missing endpoint, or non-HTTPS endpoint (SSRF prevention), 429 when
+// the subscription cap is reached, and 201 on success.
 func (h *CompanionHandler) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -186,8 +188,18 @@ func (h *CompanionHandler) handlePushSubscribe(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	h.pushSender.AddSubscription(sub)
-	w.WriteHeader(http.StatusOK)
+	// Reject non-HTTPS endpoints to prevent SSRF.
+	u, err := url.Parse(sub.Endpoint)
+	if err != nil || u.Scheme != "https" {
+		http.Error(w, "endpoint must be an https URL", http.StatusBadRequest)
+		return
+	}
+
+	if !h.pushSender.AddSubscription(sub) {
+		http.Error(w, "subscription limit reached", http.StatusTooManyRequests)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
 }
 
 // handleVAPIDPublicKey processes GET /push/vapid-public-key: returns the VAPID
