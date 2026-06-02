@@ -2,7 +2,6 @@ package relay
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -11,27 +10,32 @@ import (
 )
 
 // Handler wires an HTTP mux for the relay endpoints.
-// It depends on a Synthesizer and a ClipStore, both injected at construction
-// time so tests can supply mocks without touching real network or disk.
-// The optional hub field, when non-nil, receives a broadcast after each
-// successful ingest so SSE subscribers are notified immediately.
+// It depends on a Synthesizer, ClipStore, SSEHub, and optional TokenStore, all
+// injected at construction time so tests can supply mocks without touching real
+// network or disk.
 type Handler struct {
-	synth Synthesizer
-	store *ClipStore
-	hub   *SSEHub // nil if not wired; broadcast is skipped when nil
+	synth     Synthesizer
+	store     *ClipStore
+	hub       *SSEHub     // nil-safe; broadcast is skipped when nil
+	ts        *TokenStore // nil-safe; rotation disabled when nil
+	qrPrinter func(string) error
 }
 
-// NewHandler creates an HTTP handler backed by the given Synthesizer and store.
-// No SSE hub is wired; use NewHandlerWithHub when SSE broadcasts are needed.
-func NewHandler(synth Synthesizer, store *ClipStore) *Handler {
-	return &Handler{synth: synth, store: store}
-}
-
-// NewHandlerWithHub creates an HTTP handler backed by the given Synthesizer,
-// store, and SSEHub. After each successful ingest the handler broadcasts a
-// "new-clip" event to all hub subscribers.
-func NewHandlerWithHub(synth Synthesizer, store *ClipStore, hub *SSEHub) *Handler {
+// NewHandler creates an HTTP handler backed by the given Synthesizer, store, and hub.
+func NewHandler(synth Synthesizer, store *ClipStore, hub *SSEHub) *Handler {
 	return &Handler{synth: synth, store: store, hub: hub}
+}
+
+// WithTokenStore attaches a TokenStore to this handler, enabling POST /rotate-token.
+func (h *Handler) WithTokenStore(ts *TokenStore) *Handler {
+	h.ts = ts
+	return h
+}
+
+// WithQRPrinter attaches a callback that is called with the new token after rotation.
+func (h *Handler) WithQRPrinter(fn func(string) error) *Handler {
+	h.qrPrinter = fn
+	return h
 }
 
 // ServeHTTP implements http.Handler by routing requests to the correct handler.
@@ -39,6 +43,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/ingest":
 		h.handleIngest(w, r)
+	case r.URL.Path == "/rotate-token":
+		h.handleRotateToken(w, r)
 	case strings.HasPrefix(r.URL.Path, "/clips/"):
 		h.handleClip(w, r)
 	default:
@@ -86,11 +92,38 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.hub != nil {
-		h.hub.Broadcast("new-clip", fmt.Sprintf(`{"id":"%s"}`, id))
+		payload, _ := json.Marshal(map[string]string{"id": id})
+		h.hub.Broadcast("new-clip", string(payload))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"id": id}) //nolint:errcheck
+}
+
+// handleRotateToken processes POST /rotate-token: generates a new token and
+// returns it as JSON. The old token is immediately invalidated.
+// Returns 500 when no TokenStore was provided (ts is nil).
+func (h *Handler) handleRotateToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.ts == nil {
+		http.Error(w, "token rotation not configured", http.StatusInternalServerError)
+		return
+	}
+	token, err := h.ts.Rotate()
+	if err != nil {
+		http.Error(w, "rotation failed", http.StatusInternalServerError)
+		return
+	}
+	if h.qrPrinter != nil {
+		if printErr := h.qrPrinter(token); printErr != nil {
+			logging.Error("QR print after rotation failed: %v", printErr)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": token}) //nolint:errcheck
 }
 
 // handleClip processes GET /clips/{id}: retrieves and streams a stored MP3 clip.
@@ -105,7 +138,6 @@ func (h *Handler) handleClip(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveClip writes the stored clip identified by id to w, or 404 if not found.
-// An empty id is treated as not found. Method checking is the caller's responsibility.
 func serveClip(w http.ResponseWriter, store *ClipStore, id string) {
 	if id == "" {
 		http.Error(w, "404 page not found", http.StatusNotFound)

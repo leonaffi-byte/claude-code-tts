@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func (m *mockSynthesizer) Synthesize(text string, voice tts.Voice) ([]byte, erro
 func TestHandler_PostIngest_Returns200WithID(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -63,7 +64,7 @@ func TestHandler_PostIngest_Returns200WithID(t *testing.T) {
 func TestHandler_PostIngest_CallsSynthesizerWithProvidedText(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "synthesize this"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -83,7 +84,7 @@ func TestHandler_PostIngest_CallsSynthesizerWithProvidedText(t *testing.T) {
 func TestHandler_PostIngest_SynthesisError_Returns500(t *testing.T) {
 	mock := &mockSynthesizer{err: errors.New("openai unavailable")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -102,7 +103,7 @@ func TestHandler_PostIngest_StoresClipReturnedBySynthesizer(t *testing.T) {
 	expectedAudio := []byte{0xFF, 0xFB, 0x90, 0x64}
 	mock := &mockSynthesizer{audioData: expectedAudio}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "store me"}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -143,7 +144,7 @@ func TestHandler_GetClip_ExistingID_Returns200WithMP3Bytes(t *testing.T) {
 	}
 
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/"+id, nil)
 	w := httptest.NewRecorder()
@@ -167,7 +168,7 @@ func TestHandler_GetClip_ExistingID_Returns200WithMP3Bytes(t *testing.T) {
 func TestHandler_GetClip_MissingID_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/does-not-exist", nil)
 	w := httptest.NewRecorder()
@@ -188,7 +189,7 @@ func TestHandler_GetClip_MissingID_Returns404(t *testing.T) {
 func TestHandler_PostIngest_MissingTextField_Returns400(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{}`)
 	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
@@ -210,7 +211,7 @@ func TestHandler_PostIngest_MissingTextField_Returns400(t *testing.T) {
 func TestHandler_PostIngest_EmptyBody_Returns400(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodPost, "/ingest", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/json")
@@ -231,7 +232,7 @@ func TestHandler_PostIngest_EmptyBody_Returns400(t *testing.T) {
 func TestHandler_PostIngest_WrongMethod_Returns405(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	body := bytes.NewBufferString(`{"text": "hello"}`)
 	req := httptest.NewRequest(http.MethodPut, "/ingest", body)
@@ -257,7 +258,7 @@ func TestHandler_PostIngest_WrongMethod_Returns405(t *testing.T) {
 func TestHandler_GetClip_EmptyID_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/clips/", nil)
 	w := httptest.NewRecorder()
@@ -279,7 +280,7 @@ func TestHandler_GetClip_WrongMethod_Returns405(t *testing.T) {
 	}
 
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodPost, "/clips/"+id, nil)
 	w := httptest.NewRecorder()
@@ -300,7 +301,7 @@ func TestHandler_GetClip_WrongMethod_Returns405(t *testing.T) {
 func TestHandler_UnknownRoute_Returns404(t *testing.T) {
 	store := NewClipStore(10)
 	mock := &mockSynthesizer{}
-	handler := NewHandler(mock, store)
+	handler := NewHandler(mock, store, NewSSEHub())
 
 	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
 	w := httptest.NewRecorder()
@@ -313,18 +314,16 @@ func TestHandler_UnknownRoute_Returns404(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Hub integration — NewHandlerWithHub wires hub to POST /ingest
+// Hub integration
 // ---------------------------------------------------------------------------
 
 // TestHandler_PostIngest_BroadcastsToHub verifies that a successful POST
-// /ingest via NewHandlerWithHub sends a "new-clip" SSE event to any
-// subscriber on the hub. The test subscribes to the hub, issues the request,
-// then waits up to 100 ms for the message to arrive on the subscriber channel.
+// /ingest sends a "new-clip" SSE event to any subscriber on the hub.
 func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
 	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
 	store := NewClipStore(10)
 	hub := NewSSEHub()
-	handler := NewHandlerWithHub(mock, store, hub)
+	handler := NewHandler(mock, store, hub)
 
 	_, ch, cancel := hub.Subscribe()
 	defer cancel()
@@ -340,9 +339,6 @@ func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
 
-	// The ingest handler broadcasts synchronously before returning, so the
-	// message should already be in the buffered channel. Use a 100 ms timeout
-	// as a safety net.
 	select {
 	case msg := <-ch:
 		if !strings.Contains(msg, "event: new-clip\n") {
@@ -353,5 +349,108 @@ func TestHandler_PostIngest_BroadcastsToHub(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("timed out waiting for hub broadcast after POST /ingest")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /rotate-token
+// ---------------------------------------------------------------------------
+
+func TestHandler_PostRotateToken_Returns200WithNewToken(t *testing.T) {
+	dir := t.TempDir()
+	ts := NewTokenStore(filepath.Join(dir, "token"))
+	synth := &mockSynthesizer{}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(synth, store, hub).WithTokenStore(ts)
+
+	req := httptest.NewRequest(http.MethodPost, "/rotate-token", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("POST /rotate-token: expected 200, got %d", w.Code)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	if resp["token"] == "" {
+		t.Error("expected non-empty token in response")
+	}
+}
+
+func TestHandler_PostRotateToken_WrongMethod_Returns405(t *testing.T) {
+	dir := t.TempDir()
+	ts := NewTokenStore(filepath.Join(dir, "token"))
+	synth := &mockSynthesizer{}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(synth, store, hub).WithTokenStore(ts)
+
+	req := httptest.NewRequest(http.MethodGet, "/rotate-token", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /rotate-token: expected 405, got %d", w.Code)
+	}
+}
+
+// TestHandler_PostRotateToken_NilTokenStore_Returns500 verifies that calling
+// POST /rotate-token when the handler was constructed with a nil TokenStore
+// returns 500 rather than panicking. NewHandler documents that ts may be nil.
+func TestHandler_PostRotateToken_NilTokenStore_Returns500(t *testing.T) {
+	synth := &mockSynthesizer{}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(synth, store, hub) // no TokenStore wired
+
+	req := httptest.NewRequest(http.MethodPost, "/rotate-token", nil)
+	w := httptest.NewRecorder()
+
+	// Must not panic.
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("POST /rotate-token with nil TokenStore: expected 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_PostIngest_BroadcastsNewClipEventToHub verifies that after a
+// successful synthesis and store, the Handler broadcasts a "new-clip" SSE event
+// to the hub. This ensures companion clients receive real-time notifications.
+func TestHandler_PostIngest_BroadcastsNewClipEventToHub(t *testing.T) {
+	mock := &mockSynthesizer{audioData: []byte("fake-mp3")}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewHandler(mock, store, hub)
+
+	// Subscribe before the ingest so we receive the broadcast.
+	_, ch, cancel := hub.Subscribe()
+	defer cancel()
+
+	body := bytes.NewBufferString(`{"text": "broadcast me"}`)
+	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from ingest, got %d", w.Code)
+	}
+
+	// Drain the channel; the broadcast is non-blocking so it may be buffered.
+	select {
+	case msg, ok := <-ch:
+		if !ok {
+			t.Fatal("subscriber channel was closed before receiving a broadcast")
+		}
+		if !strings.Contains(msg, "new-clip") {
+			t.Errorf("broadcast message %q does not contain expected event %q", msg, "new-clip")
+		}
+	default:
+		t.Error("hub received no broadcast after successful ingest")
 	}
 }
