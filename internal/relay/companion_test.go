@@ -484,6 +484,101 @@ func TestCompanionHandler_GetManifest_URLSpecialCharsInToken(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// POST /push/subscribe — Tests E, F, G
+// ---------------------------------------------------------------------------
+
+// mockPushSender records AddSubscription calls so handler tests can assert
+// that subscriptions are registered without needing a real PushSender.
+type mockPushSender struct {
+	addedSubs []PushSubscription
+	sendCalls []sendCall
+}
+
+type sendCall struct {
+	clipID  string
+	clipURL string
+}
+
+func (m *mockPushSender) AddSubscription(sub PushSubscription) {
+	m.addedSubs = append(m.addedSubs, sub)
+}
+
+func (m *mockPushSender) Send(clipID, clipURL string) error {
+	m.sendCalls = append(m.sendCalls, sendCall{clipID: clipID, clipURL: clipURL})
+	return nil
+}
+
+// TestCompanionHandler_PostPushSubscribe_StoresSubscription verifies that a
+// valid POST /push/subscribe body registers the subscription with the push
+// sender and returns 200 OK.
+func TestCompanionHandler_PostPushSubscribe_StoresSubscription(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	mockPS := &mockPushSender{}
+	handler := NewCompanionHandler(store, hub, nil)
+	handler.WithPushSender(mockPS)
+
+	body := `{"endpoint":"https://push.example.com/abc","keys":{"p256dh":"dGVzdA==","auth":"dGVzdA=="}}`
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("POST /push/subscribe: expected 200, got %d — body: %s", w.Code, w.Body.String())
+	}
+
+	if len(mockPS.addedSubs) != 1 {
+		t.Fatalf("expected 1 subscription added, got %d", len(mockPS.addedSubs))
+	}
+	if mockPS.addedSubs[0].Endpoint != "https://push.example.com/abc" {
+		t.Errorf("subscription endpoint = %q, want %q", mockPS.addedSubs[0].Endpoint, "https://push.example.com/abc")
+	}
+}
+
+// TestCompanionHandler_PostPushSubscribe_MissingEndpoint_Returns400 verifies
+// that a body without an endpoint field returns 400 Bad Request.
+func TestCompanionHandler_PostPushSubscribe_MissingEndpoint_Returns400(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	mockPS := &mockPushSender{}
+	handler := NewCompanionHandler(store, hub, nil)
+	handler.WithPushSender(mockPS)
+
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("POST /push/subscribe with missing endpoint: expected 400, got %d", w.Code)
+	}
+
+	if len(mockPS.addedSubs) != 0 {
+		t.Errorf("expected no subscriptions added on bad request, got %d", len(mockPS.addedSubs))
+	}
+}
+
+// TestCompanionHandler_GetPushSubscribe_Returns405 verifies that a GET to
+// /push/subscribe is rejected with 405 Method Not Allowed.
+func TestCompanionHandler_GetPushSubscribe_Returns405(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/push/subscribe", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /push/subscribe: expected 405, got %d", w.Code)
+	}
+}
+
 // TestCompanionHandler_GetManifest_EmptyToken verifies that GET /manifest.json
 // still returns valid JSON when the token is an empty string (e.g. during
 // development without auth configured).

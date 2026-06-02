@@ -417,6 +417,75 @@ func TestHandler_PostRotateToken_NilTokenStore_Returns500(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Push sender integration — Tests H and I
+// ---------------------------------------------------------------------------
+
+// TestHandler_PostIngest_CallsPushSenderWithNewClipID verifies that after a
+// successful ingest the handler calls the push sender's Send method with the
+// newly minted clip ID. This is the trigger that delivers a background push
+// notification to subscribed phones.
+func TestHandler_PostIngest_CallsPushSenderWithNewClipID(t *testing.T) {
+	synth := &mockSynthesizer{audioData: []byte("fake-mp3")}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	ps := &mockPushSender{}
+
+	handler := NewHandler(synth, store, hub).WithPushSender(ps)
+
+	body := bytes.NewBufferString(`{"text": "hello push"}`)
+	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
+	}
+
+	// Retrieve the clip ID from the response so we can verify the push call.
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	id := resp["id"]
+	if id == "" {
+		t.Fatal("response JSON has no 'id' field")
+	}
+
+	if len(ps.sendCalls) != 1 {
+		t.Fatalf("expected 1 push Send call, got %d", len(ps.sendCalls))
+	}
+	if ps.sendCalls[0].clipID != id {
+		t.Errorf("push Send called with clipID %q, want %q", ps.sendCalls[0].clipID, id)
+	}
+}
+
+// TestHandler_PostIngest_NilPushSender_DoesNotPanic verifies that when no push
+// sender is configured (nil), a successful ingest still returns 200 without
+// panicking. Push is an optional dependency.
+func TestHandler_PostIngest_NilPushSender_DoesNotPanic(t *testing.T) {
+	synth := &mockSynthesizer{audioData: []byte("fake-mp3")}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+
+	// Deliberately no WithPushSender call — push sender is nil.
+	handler := NewHandler(synth, store, hub)
+
+	body := bytes.NewBufferString(`{"text": "hello, no push"}`)
+	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	// Must not panic.
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("POST /ingest with nil push sender: expected 200, got %d", w.Code)
+	}
+}
+
 // TestHandler_PostIngest_BroadcastsNewClipEventToHub verifies that after a
 // successful synthesis and store, the Handler broadcasts a "new-clip" SSE event
 // to the hub. This ensures companion clients receive real-time notifications.

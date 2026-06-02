@@ -14,11 +14,12 @@ import (
 // injected at construction time so tests can supply mocks without touching real
 // network or disk.
 type Handler struct {
-	synth     Synthesizer
-	store     *ClipStore
-	hub       *SSEHub     // nil-safe; broadcast is skipped when nil
-	ts        *TokenStore // nil-safe; rotation disabled when nil
-	qrPrinter func(string) error
+	synth      Synthesizer
+	store      *ClipStore
+	hub        *SSEHub          // nil-safe; broadcast is skipped when nil
+	ts         *TokenStore      // nil-safe; rotation disabled when nil
+	qrPrinter  func(string) error
+	pushSender PushSenderIface  // nil-safe; push is skipped when nil
 }
 
 // NewHandler creates an HTTP handler backed by the given Synthesizer, store, and hub.
@@ -35,6 +36,14 @@ func (h *Handler) WithTokenStore(ts *TokenStore) *Handler {
 // WithQRPrinter attaches a callback that is called with the new token after rotation.
 func (h *Handler) WithQRPrinter(fn func(string) error) *Handler {
 	h.qrPrinter = fn
+	return h
+}
+
+// WithPushSender attaches an optional push sender that is called after each
+// successful ingest to deliver a background Web Push notification.
+// Passing nil disables push (useful in tests that don't need push).
+func (h *Handler) WithPushSender(ps PushSenderIface) *Handler {
+	h.pushSender = ps
 	return h
 }
 

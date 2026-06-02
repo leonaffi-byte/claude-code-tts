@@ -15,9 +15,10 @@ var companionHTML []byte
 // CompanionHandler serves the public companion page, SSE event stream, and
 // clip proxy. It is intended to run on a separate public-facing port.
 type CompanionHandler struct {
-	store *ClipStore
-	hub   *SSEHub
-	ts    *TokenStore
+	store      *ClipStore
+	hub        *SSEHub
+	ts         *TokenStore
+	pushSender PushSenderIface // nil-safe; subscription endpoint disabled when nil
 }
 
 // NewCompanionHandler creates a CompanionHandler backed by the given ClipStore,
@@ -25,6 +26,13 @@ type CompanionHandler struct {
 // request so that token rotation is reflected immediately in the PWA start_url.
 func NewCompanionHandler(store *ClipStore, hub *SSEHub, ts *TokenStore) *CompanionHandler {
 	return &CompanionHandler{store: store, hub: hub, ts: ts}
+}
+
+// WithPushSender attaches an optional push sender so the companion can accept
+// Web Push subscription registrations via POST /push/subscribe.
+func (h *CompanionHandler) WithPushSender(ps PushSenderIface) *CompanionHandler {
+	h.pushSender = ps
+	return h
 }
 
 // ServeHTTP routes requests to the companion page, SSE stream, or clip proxy.
@@ -36,6 +44,8 @@ func (h *CompanionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleEvents(w, r)
 	case r.URL.Path == "/manifest.json":
 		h.serveManifest(w, r)
+	case r.URL.Path == "/push/subscribe":
+		h.handlePushSubscribe(w, r)
 	case strings.HasPrefix(r.URL.Path, "/clips/"):
 		h.handleClip(w, r)
 	default:
@@ -131,4 +141,22 @@ func (h *CompanionHandler) serveManifest(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprint(w, manifest) //nolint:errcheck
+}
+
+// handlePushSubscribe handles POST /push/subscribe. It decodes a Web Push
+// subscription object from the request body and registers it with the push
+// sender so future clips trigger a push notification to this subscriber.
+//
+// Returns 405 for non-POST methods, 400 when the endpoint field is missing,
+// and 200 on success.
+//
+// NOTE: this is a stub — the real implementation is pending issue #5.
+func (h *CompanionHandler) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// stub: real implementation decodes body, validates endpoint, and calls
+	// h.pushSender.AddSubscription — returns 501 until implemented.
+	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
