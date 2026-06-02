@@ -72,14 +72,27 @@ func main() {
 		logging.Fatal("failed to create ingest server: %v", err)
 	}
 
+	// Load or generate VAPID keypair for Web Push.
+	configDir := filepath.Join(home, ".claude", "plugins", "claude-code-tts")
+	vs := relay.NewVAPIDStore(configDir)
+	if _, _, err := vs.LoadOrGenerate(); err != nil {
+		logging.Fatal("failed to load/generate VAPID keypair: %v", err)
+	}
+	pushTransport := relay.NewWebPushTransport(vs)
+	ps := relay.NewPushSender(pushTransport)
+
 	// Wire token store and QR printer into the ingest handler for /rotate-token.
 	ingestSrv.Handler().
 		WithTokenStore(ts).
 		WithQRPrinter(func(newToken string) error {
 			return relay.PrintQR(os.Stdout, baseURL, newToken)
-		})
+		}).
+		WithPushSender(ps).
+		WithClipBaseURL(baseURL)
 
-	companion := relay.NewCompanionHandler(store, hub, ts)
+	companion := relay.NewCompanionHandler(store, hub, ts).
+		WithPushSender(ps).
+		WithVAPIDStore(vs)
 	pubSrv := relay.NewPublicServer(ts, companion)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
