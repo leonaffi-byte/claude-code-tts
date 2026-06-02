@@ -86,3 +86,10 @@ func (h *SSEHub) Count() int {
 	defer h.mu.RUnlock()
 	return len(h.subscribers)
 }
+
+// HasLiveListener implements PresenceTracker. It returns true if at least one
+// SSE subscriber is currently connected. This is used by Handler to decide
+// whether to suppress a Web Push notification after broadcasting via SSE.
+func (h *SSEHub) HasLiveListener() bool {
+	return h.Count() > 0
+}
