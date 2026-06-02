@@ -2,6 +2,7 @@ package relay
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,13 +13,18 @@ import (
 //go:embed web/companion.html
 var companionHTML []byte
 
-// CompanionHandler serves the public companion page, SSE event stream, and
-// clip proxy. It is intended to run on a separate public-facing port.
+//go:embed web/sw.js
+var serviceWorkerJS []byte
+
+// CompanionHandler serves the public companion page, SSE event stream, clip
+// proxy, push subscription endpoint, VAPID public key endpoint, and service
+// worker. It is intended to run on a separate public-facing port.
 type CompanionHandler struct {
 	store      *ClipStore
 	hub        *SSEHub
 	ts         *TokenStore
-	pushSender PushSenderIface // nil-safe; subscription endpoint disabled when nil
+	pushSender PushSenderIface // nil-safe; subscription endpoint returns 503 when nil
+	vapidStore *VAPIDStore     // nil-safe; public-key endpoint returns 503 when nil
 }
 
 // NewCompanionHandler creates a CompanionHandler backed by the given ClipStore,
@@ -35,7 +41,15 @@ func (h *CompanionHandler) WithPushSender(ps PushSenderIface) *CompanionHandler 
 	return h
 }
 
-// ServeHTTP routes requests to the companion page, SSE stream, or clip proxy.
+// WithVAPIDStore attaches an optional VAPID store so the companion can serve
+// the VAPID public key via GET /push/vapid-public-key.
+func (h *CompanionHandler) WithVAPIDStore(vs *VAPIDStore) *CompanionHandler {
+	h.vapidStore = vs
+	return h
+}
+
+// ServeHTTP routes requests to the companion page, SSE stream, clip proxy,
+// push subscription, VAPID key, or service worker endpoints.
 func (h *CompanionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/":
@@ -46,6 +60,10 @@ func (h *CompanionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveManifest(w, r)
 	case r.URL.Path == "/push/subscribe":
 		h.handlePushSubscribe(w, r)
+	case r.URL.Path == "/push/vapid-public-key":
+		h.handleVAPIDPublicKey(w, r)
+	case r.URL.Path == "/sw.js":
+		h.handleSWJS(w, r)
 	case strings.HasPrefix(r.URL.Path, "/clips/"):
 		h.handleClip(w, r)
 	default:
@@ -143,20 +161,64 @@ func (h *CompanionHandler) serveManifest(w http.ResponseWriter, r *http.Request)
 	fmt.Fprint(w, manifest) //nolint:errcheck
 }
 
-// handlePushSubscribe handles POST /push/subscribe. It decodes a Web Push
-// subscription object from the request body and registers it with the push
-// sender so future clips trigger a push notification to this subscriber.
-//
-// Returns 405 for non-POST methods, 400 when the endpoint field is missing,
-// and 200 on success.
-//
-// NOTE: this is a stub — the real implementation is pending issue #5.
+// handlePushSubscribe processes POST /push/subscribe: stores the Web Push
+// subscription from the phone so future clips trigger a background push.
+// Returns 405 for non-POST, 503 when no PushSender is wired, 400 for invalid
+// JSON or missing endpoint, and 200 on success.
 func (h *CompanionHandler) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// stub: real implementation decodes body, validates endpoint, and calls
-	// h.pushSender.AddSubscription — returns 501 until implemented.
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	if h.pushSender == nil {
+		http.Error(w, "push not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10) // 4 KB limit
+	var sub PushSubscription
+	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if sub.Endpoint == "" {
+		http.Error(w, "endpoint field is required", http.StatusBadRequest)
+		return
+	}
+
+	h.pushSender.AddSubscription(sub)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleVAPIDPublicKey processes GET /push/vapid-public-key: returns the VAPID
+// public key as plain text for use in PushManager.subscribe(). Returns 503
+// when no VAPIDStore is wired.
+func (h *CompanionHandler) handleVAPIDPublicKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.vapidStore == nil {
+		http.Error(w, "VAPID not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, h.vapidStore.PublicKey()) //nolint:errcheck
+}
+
+// handleSWJS serves the embedded service worker script with the scope header
+// required for it to intercept push events on the companion's token-scoped path.
+func (h *CompanionHandler) handleSWJS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Service-Worker-Allowed: / grants the SW scope over the entire origin path
+	// after the auth middleware has already stripped the token prefix.
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Service-Worker-Allowed", "/")
+	w.WriteHeader(http.StatusOK)
+	w.Write(serviceWorkerJS) //nolint:errcheck
 }

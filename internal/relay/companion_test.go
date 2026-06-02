@@ -606,3 +606,103 @@ func TestCompanionHandler_GetManifest_EmptyToken(t *testing.T) {
 		t.Errorf("GET /manifest.json with empty token: body does not look like JSON: %s", body)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// VAPID public key endpoint — GET /push/vapid-public-key
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_GetVAPIDPublicKey_Returns200WithKey verifies that GET
+// /push/vapid-public-key returns 200 with a non-empty text/plain body containing
+// the VAPID public key.
+func TestCompanionHandler_GetVAPIDPublicKey_Returns200WithKey(t *testing.T) {
+	dir := t.TempDir()
+	vs := NewVAPIDStore(dir)
+	if _, _, err := vs.LoadOrGenerate(); err != nil {
+		t.Fatalf("LoadOrGenerate: %v", err)
+	}
+
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil).WithVAPIDStore(vs)
+
+	req := httptest.NewRequest(http.MethodGet, "/push/vapid-public-key", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /push/vapid-public-key: expected 200, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("GET /push/vapid-public-key: expected text/plain, got %q", ct)
+	}
+	if w.Body.String() == "" {
+		t.Error("GET /push/vapid-public-key: expected non-empty body")
+	}
+}
+
+// TestCompanionHandler_GetVAPIDPublicKey_NilStore_Returns503 verifies that GET
+// /push/vapid-public-key returns 503 when no VAPIDStore is wired.
+func TestCompanionHandler_GetVAPIDPublicKey_NilStore_Returns503(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil) // no VAPIDStore
+
+	req := httptest.NewRequest(http.MethodGet, "/push/vapid-public-key", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("GET /push/vapid-public-key with nil store: expected 503, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Service worker endpoint — GET /sw.js
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_GetSWJS_Returns200WithJS verifies that GET /sw.js
+// returns 200 with Content-Type application/javascript and a non-empty body.
+func TestCompanionHandler_GetSWJS_Returns200WithJS(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /sw.js: expected 200, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/javascript") {
+		t.Errorf("GET /sw.js: expected Content-Type application/javascript, got %q", ct)
+	}
+	if w.Body.Len() == 0 {
+		t.Error("GET /sw.js: expected non-empty body")
+	}
+}
+
+// TestCompanionHandler_GetSWJS_ServiceWorkerAllowedHeader verifies that GET
+// /sw.js includes the Service-Worker-Allowed: / header so the service worker
+// can claim the full companion path scope.
+func TestCompanionHandler_GetSWJS_ServiceWorkerAllowedHeader(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	swAllowed := w.Header().Get("Service-Worker-Allowed")
+	if swAllowed != "/" {
+		t.Errorf("GET /sw.js: Service-Worker-Allowed = %q, want %q", swAllowed, "/")
+	}
+}
+
