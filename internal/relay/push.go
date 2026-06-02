@@ -52,26 +52,6 @@ func (ps *PushSender) Send(clipID, clipURL string) error {
 	return nil
 }
 
-// VAPIDStore persists and loads a VAPID keypair from a directory on disk.
-// The private key is written to <dir>/vapid-private.pem and the public key to
-// <dir>/vapid-public.txt. On first call the keys are generated; subsequent
-// calls read them back from disk.
-type VAPIDStore struct {
-	dir string
-}
-
-// NewVAPIDStore creates a VAPIDStore that keeps its keypair files under dir.
-func NewVAPIDStore(dir string) *VAPIDStore {
-	return &VAPIDStore{dir: dir}
-}
-
-// LoadOrGenerate returns the VAPID private and public keys. On first call with
-// a fresh directory the keys are generated and persisted; on subsequent calls
-// the existing files are read back unchanged.
-func (vs *VAPIDStore) LoadOrGenerate() (privateKey, publicKey string, err error) {
-	return "", "", nil
-}
-
 // PushSenderIface is the injectable interface for the push-sender dependency
 // used by Handler and CompanionHandler. This keeps both handlers decoupled from
 // the concrete PushSender so tests can supply a mock.
