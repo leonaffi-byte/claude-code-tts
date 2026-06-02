@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -484,6 +485,122 @@ func TestCompanionHandler_GetManifest_URLSpecialCharsInToken(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// POST /push/subscribe — Tests E, F, G
+// ---------------------------------------------------------------------------
+
+// mockPushSender records AddSubscription calls so handler tests can assert
+// that subscriptions are registered without needing a real PushSender.
+type mockPushSender struct {
+	addedSubs []PushSubscription
+	sendCalls []sendCall
+}
+
+type sendCall struct {
+	clipID  string
+	clipURL string
+}
+
+func (m *mockPushSender) AddSubscription(sub PushSubscription) bool {
+	m.addedSubs = append(m.addedSubs, sub)
+	return true
+}
+
+func (m *mockPushSender) Send(clipID, clipURL string) error {
+	m.sendCalls = append(m.sendCalls, sendCall{clipID: clipID, clipURL: clipURL})
+	return nil
+}
+
+// TestCompanionHandler_PostPushSubscribe_StoresSubscription verifies that a
+// valid POST /push/subscribe body registers the subscription with the push
+// sender and returns 201 Created.
+func TestCompanionHandler_PostPushSubscribe_StoresSubscription(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	mockPS := &mockPushSender{}
+	handler := NewCompanionHandler(store, hub, nil)
+	handler.WithPushSender(mockPS)
+
+	body := `{"endpoint":"https://push.example.com/abc","keys":{"p256dh":"dGVzdA==","auth":"dGVzdA=="}}`
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("POST /push/subscribe: expected 201, got %d — body: %s", w.Code, w.Body.String())
+	}
+
+	if len(mockPS.addedSubs) != 1 {
+		t.Fatalf("expected 1 subscription added, got %d", len(mockPS.addedSubs))
+	}
+	if mockPS.addedSubs[0].Endpoint != "https://push.example.com/abc" {
+		t.Errorf("subscription endpoint = %q, want %q", mockPS.addedSubs[0].Endpoint, "https://push.example.com/abc")
+	}
+}
+
+// TestCompanionHandler_PostPushSubscribe_MissingEndpoint_Returns400 verifies
+// that a body without an endpoint field returns 400 Bad Request.
+func TestCompanionHandler_PostPushSubscribe_MissingEndpoint_Returns400(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	mockPS := &mockPushSender{}
+	handler := NewCompanionHandler(store, hub, nil)
+	handler.WithPushSender(mockPS)
+
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("POST /push/subscribe with missing endpoint: expected 400, got %d", w.Code)
+	}
+
+	if len(mockPS.addedSubs) != 0 {
+		t.Errorf("expected no subscriptions added on bad request, got %d", len(mockPS.addedSubs))
+	}
+}
+
+// TestCompanionHandler_PostPushSubscribe_NilSender_Returns503 verifies that when
+// no PushSender is wired, POST /push/subscribe returns 503 Service Unavailable
+// rather than panicking. Push is an optional dependency.
+func TestCompanionHandler_PostPushSubscribe_NilSender_Returns503(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil) // deliberately no WithPushSender
+
+	body := `{"endpoint":"https://push.example.com/abc","keys":{"p256dh":"dGVzdA==","auth":"dGVzdA=="}}`
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /push/subscribe with nil sender: expected 503, got %d — body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCompanionHandler_GetPushSubscribe_Returns405 verifies that a GET to
+// /push/subscribe is rejected with 405 Method Not Allowed.
+func TestCompanionHandler_GetPushSubscribe_Returns405(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/push/subscribe", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /push/subscribe: expected 405, got %d", w.Code)
+	}
+}
+
 // TestCompanionHandler_GetManifest_EmptyToken verifies that GET /manifest.json
 // still returns valid JSON when the token is an empty string (e.g. during
 // development without auth configured).
@@ -511,3 +628,168 @@ func TestCompanionHandler_GetManifest_EmptyToken(t *testing.T) {
 		t.Errorf("GET /manifest.json with empty token: body does not look like JSON: %s", body)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// VAPID public key endpoint — GET /push/vapid-public-key
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_GetVAPIDPublicKey_Returns200WithKey verifies that GET
+// /push/vapid-public-key returns 200 with a non-empty text/plain body containing
+// the VAPID public key.
+func TestCompanionHandler_GetVAPIDPublicKey_Returns200WithKey(t *testing.T) {
+	dir := t.TempDir()
+	vs := NewVAPIDStore(dir)
+	if _, _, err := vs.LoadOrGenerate(); err != nil {
+		t.Fatalf("LoadOrGenerate: %v", err)
+	}
+
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil).WithVAPIDStore(vs)
+
+	req := httptest.NewRequest(http.MethodGet, "/push/vapid-public-key", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /push/vapid-public-key: expected 200, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("GET /push/vapid-public-key: expected text/plain, got %q", ct)
+	}
+	if w.Body.String() == "" {
+		t.Error("GET /push/vapid-public-key: expected non-empty body")
+	}
+}
+
+// TestCompanionHandler_GetVAPIDPublicKey_NilStore_Returns503 verifies that GET
+// /push/vapid-public-key returns 503 when no VAPIDStore is wired.
+func TestCompanionHandler_GetVAPIDPublicKey_NilStore_Returns503(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil) // no VAPIDStore
+
+	req := httptest.NewRequest(http.MethodGet, "/push/vapid-public-key", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("GET /push/vapid-public-key with nil store: expected 503, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Service worker endpoint — GET /sw.js
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_GetSWJS_Returns200WithJS verifies that GET /sw.js
+// returns 200 with Content-Type application/javascript and a non-empty body.
+func TestCompanionHandler_GetSWJS_Returns200WithJS(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /sw.js: expected 200, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/javascript") {
+		t.Errorf("GET /sw.js: expected Content-Type application/javascript, got %q", ct)
+	}
+	if w.Body.Len() == 0 {
+		t.Error("GET /sw.js: expected non-empty body")
+	}
+}
+
+// TestCompanionHandler_GetSWJS_ServiceWorkerAllowedHeader verifies that GET
+// /sw.js includes the Service-Worker-Allowed: / header so the service worker
+// can claim the full companion path scope.
+func TestCompanionHandler_GetSWJS_ServiceWorkerAllowedHeader(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	swAllowed := w.Header().Get("Service-Worker-Allowed")
+	if swAllowed != "/" {
+		t.Errorf("GET /sw.js: Service-Worker-Allowed = %q, want %q", swAllowed, "/")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SSRF prevention — non-HTTPS endpoint rejected
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_PostPushSubscribe_NonHTTPSEndpoint_Returns400 verifies
+// that a POST /push/subscribe with an http:// endpoint is rejected with 400 to
+// prevent SSRF attacks where the relay would POST to an internal host.
+func TestCompanionHandler_PostPushSubscribe_NonHTTPSEndpoint_Returns400(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	transport := newMockTransport()
+	ps := NewPushSender(transport)
+	handler := NewCompanionHandler(store, hub, nil).WithPushSender(ps)
+
+	body := strings.NewReader(`{"endpoint":"http://127.0.0.1:8765/ingest","keys":{"p256dh":"FAKE","auth":"FAKE"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("POST /push/subscribe with http:// endpoint: expected 400, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Subscription cap — 429 when cap is reached
+// ---------------------------------------------------------------------------
+
+// TestCompanionHandler_PostPushSubscribe_CapReached_Returns429 verifies that
+// when the subscription cap is reached, subsequent registrations are rejected
+// with 429 Too Many Requests to prevent memory exhaustion.
+func TestCompanionHandler_PostPushSubscribe_CapReached_Returns429(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	transport := newMockTransport()
+	ps := NewPushSender(transport)
+	ps.maxSubs = 2 // set low cap for test
+
+	handler := NewCompanionHandler(store, hub, nil).WithPushSender(ps)
+
+	for i := 0; i < 2; i++ {
+		body := strings.NewReader(fmt.Sprintf(`{"endpoint":"https://push.example.com/%d","keys":{"p256dh":"F","auth":"A"}}`, i))
+		req := httptest.NewRequest(http.MethodPost, "/push/subscribe", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("registration %d: expected 201, got %d", i, w.Code)
+		}
+	}
+
+	// Third registration must be rejected.
+	body := strings.NewReader(`{"endpoint":"https://push.example.com/overflow","keys":{"p256dh":"F","auth":"A"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 when cap reached, got %d", w.Code)
+	}
+}
+

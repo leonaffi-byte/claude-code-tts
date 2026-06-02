@@ -14,11 +14,13 @@ import (
 // injected at construction time so tests can supply mocks without touching real
 // network or disk.
 type Handler struct {
-	synth     Synthesizer
-	store     *ClipStore
-	hub       *SSEHub     // nil-safe; broadcast is skipped when nil
-	ts        *TokenStore // nil-safe; rotation disabled when nil
-	qrPrinter func(string) error
+	synth       Synthesizer
+	store       *ClipStore
+	hub         *SSEHub         // nil-safe; broadcast is skipped when nil
+	ts          *TokenStore     // nil-safe; rotation disabled when nil
+	qrPrinter   func(string) error
+	pushSender  PushSenderIface // nil-safe; push is skipped when nil
+	clipBaseURL string          // base URL prepended to clip IDs in push payloads
 }
 
 // NewHandler creates an HTTP handler backed by the given Synthesizer, store, and hub.
@@ -35,6 +37,22 @@ func (h *Handler) WithTokenStore(ts *TokenStore) *Handler {
 // WithQRPrinter attaches a callback that is called with the new token after rotation.
 func (h *Handler) WithQRPrinter(fn func(string) error) *Handler {
 	h.qrPrinter = fn
+	return h
+}
+
+// WithPushSender attaches an optional push sender that is called after each
+// successful ingest to deliver a background Web Push notification.
+// Passing nil disables push (useful in tests that don't need push).
+func (h *Handler) WithPushSender(ps PushSenderIface) *Handler {
+	h.pushSender = ps
+	return h
+}
+
+// WithClipBaseURL sets the base URL prepended to clip IDs in push payloads
+// (e.g. "https://relay.example.com"). When empty, clipURL in the push payload
+// is also empty; the service worker degrades gracefully.
+func (h *Handler) WithClipBaseURL(url string) *Handler {
+	h.clipBaseURL = url
 	return h
 }
 
@@ -94,6 +112,16 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if h.hub != nil {
 		payload, _ := json.Marshal(map[string]string{"id": id})
 		h.hub.Broadcast("new-clip", string(payload))
+	}
+
+	if h.pushSender != nil {
+		clipURL := ""
+		if h.clipBaseURL != "" {
+			clipURL = h.clipBaseURL + "/clips/" + id
+		}
+		if sendErr := h.pushSender.Send(id, clipURL); sendErr != nil {
+			logging.Error("push send failed: %v", sendErr)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
