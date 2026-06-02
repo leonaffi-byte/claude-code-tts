@@ -26,6 +26,18 @@ func NewHandler(synth Synthesizer, store *ClipStore, hub *SSEHub) *Handler {
 	return &Handler{synth: synth, store: store, hub: hub}
 }
 
+// WithTokenStore attaches a TokenStore to this handler, enabling POST /rotate-token.
+func (h *Handler) WithTokenStore(ts *TokenStore) *Handler {
+	h.ts = ts
+	return h
+}
+
+// WithQRPrinter attaches a callback that is called with the new token after rotation.
+func (h *Handler) WithQRPrinter(fn func(string) error) *Handler {
+	h.qrPrinter = fn
+	return h
+}
+
 // ServeHTTP implements http.Handler by routing requests to the correct handler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -88,6 +100,32 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"id": id}) //nolint:errcheck
 }
 
+// handleRotateToken processes POST /rotate-token: generates a new token and
+// returns it as JSON. The old token is immediately invalidated.
+// Returns 500 when no TokenStore was provided (ts is nil).
+func (h *Handler) handleRotateToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.ts == nil {
+		http.Error(w, "token rotation not configured", http.StatusInternalServerError)
+		return
+	}
+	token, err := h.ts.Rotate()
+	if err != nil {
+		http.Error(w, "rotation failed", http.StatusInternalServerError)
+		return
+	}
+	if h.qrPrinter != nil {
+		if printErr := h.qrPrinter(token); printErr != nil {
+			logging.Error("QR print after rotation failed: %v", printErr)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": token}) //nolint:errcheck
+}
+
 // handleClip processes GET /clips/{id}: retrieves and streams a stored MP3 clip.
 func (h *Handler) handleClip(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -97,46 +135,6 @@ func (h *Handler) handleClip(w http.ResponseWriter, r *http.Request) {
 
 	id := strings.TrimPrefix(r.URL.Path, "/clips/")
 	serveClip(w, h.store, id)
-}
-
-// handleRotateToken processes POST /rotate-token: rotates the auth token.
-func (h *Handler) handleRotateToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.ts == nil {
-		http.Error(w, "token rotation not configured", http.StatusInternalServerError)
-		return
-	}
-
-	token, err := h.ts.Rotate()
-	if err != nil {
-		http.Error(w, "rotation failed", http.StatusInternalServerError)
-		return
-	}
-
-	if h.qrPrinter != nil {
-		if err := h.qrPrinter(token); err != nil {
-			logging.Error("QR print failed after rotation: %v", err)
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token}) //nolint:errcheck
-}
-
-// WithTokenStore attaches a TokenStore to this handler, enabling POST /rotate-token.
-func (h *Handler) WithTokenStore(ts *TokenStore) *Handler {
-	h.ts = ts
-	return h
-}
-
-// WithQRPrinter attaches a callback that is called with the new token after rotation.
-func (h *Handler) WithQRPrinter(fn func(string) error) *Handler {
-	h.qrPrinter = fn
-	return h
 }
 
 // serveClip writes the stored clip identified by id to w, or 404 if not found.

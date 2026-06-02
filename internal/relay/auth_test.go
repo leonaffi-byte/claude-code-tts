@@ -38,7 +38,7 @@ func (s *handlerSpy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestAuthMiddleware_ValidToken_ForwardsRequest(t *testing.T) {
 	const token = "abc123"
 	inner := &handlerSpy{}
-	mw := NewAuthMiddleware(token, inner)
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, token), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/"+token+"/", nil)
 	w := httptest.NewRecorder()
@@ -58,7 +58,7 @@ func TestAuthMiddleware_ValidToken_ForwardsRequest(t *testing.T) {
 func TestAuthMiddleware_MissingToken_Returns404(t *testing.T) {
 	const token = "abc123"
 	inner := &handlerSpy{}
-	mw := NewAuthMiddleware(token, inner)
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, token), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -78,7 +78,7 @@ func TestAuthMiddleware_MissingToken_Returns404(t *testing.T) {
 func TestAuthMiddleware_WrongToken_Returns404(t *testing.T) {
 	const token = "abc123"
 	inner := &handlerSpy{}
-	mw := NewAuthMiddleware(token, inner)
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, token), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/wrongtoken/", nil)
 	w := httptest.NewRecorder()
@@ -99,7 +99,7 @@ func TestAuthMiddleware_WrongToken_Returns404(t *testing.T) {
 func TestAuthMiddleware_ValidToken_StripsPrefix(t *testing.T) {
 	const token = "abc123"
 	inner := &handlerSpy{}
-	mw := NewAuthMiddleware(token, inner)
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, token), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/"+token+"/events", nil)
 	w := httptest.NewRecorder()
@@ -289,7 +289,7 @@ func TestTokenStore_Rotate_WithoutPriorLoadOrGenerate(t *testing.T) {
 func TestAuthMiddleware_ExactTokenPath_ForwardsAsRoot(t *testing.T) {
 	const token = "abc123"
 	inner := &handlerSpy{}
-	mw := NewAuthMiddleware(token, inner)
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, token), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/"+token, nil)
 	w := httptest.NewRecorder()
@@ -312,7 +312,7 @@ func TestAuthMiddleware_ExactTokenPath_ForwardsAsRoot(t *testing.T) {
 func TestAuthMiddleware_NestedPath_ForwardsCorrectly(t *testing.T) {
 	const token = "abc123"
 	inner := &handlerSpy{}
-	mw := NewAuthMiddleware(token, inner)
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, token), inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/"+token+"/foo/bar", nil)
 	w := httptest.NewRecorder()

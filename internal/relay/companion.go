@@ -17,13 +17,14 @@ var companionHTML []byte
 type CompanionHandler struct {
 	store *ClipStore
 	hub   *SSEHub
-	token string
+	ts    *TokenStore
 }
 
 // NewCompanionHandler creates a CompanionHandler backed by the given ClipStore,
-// SSEHub, and token (used to embed in the PWA manifest start_url).
-func NewCompanionHandler(store *ClipStore, hub *SSEHub, token string) *CompanionHandler {
-	return &CompanionHandler{store: store, hub: hub, token: token}
+// SSEHub, and token store. The token store is consulted on each manifest
+// request so that token rotation is reflected immediately in the PWA start_url.
+func NewCompanionHandler(store *ClipStore, hub *SSEHub, ts *TokenStore) *CompanionHandler {
+	return &CompanionHandler{store: store, hub: hub, ts: ts}
 }
 
 // ServeHTTP routes requests to the companion page, SSE stream, or clip proxy.
@@ -113,7 +114,11 @@ func (h *CompanionHandler) handleClip(w http.ResponseWriter, r *http.Request) {
 // serveManifest generates and writes a PWA manifest JSON with the token
 // embedded in the start_url so installed PWAs reload authenticated.
 func (h *CompanionHandler) serveManifest(w http.ResponseWriter, r *http.Request) {
-	startURL := "/" + h.token + "/"
+	token := ""
+	if h.ts != nil {
+		token = h.ts.Current()
+	}
+	startURL := "/" + token + "/"
 	manifest := fmt.Sprintf(`{
   "name": "TTS Companion",
   "short_name": "TTS",

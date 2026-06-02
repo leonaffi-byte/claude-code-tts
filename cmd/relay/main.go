@@ -79,8 +79,8 @@ func main() {
 			return relay.PrintQR(os.Stdout, baseURL, newToken)
 		})
 
-	companion := relay.NewCompanionHandler(store, hub, token)
-	pubSrv := relay.NewPublicServer(token, companion)
+	companion := relay.NewCompanionHandler(store, hub, ts)
+	pubSrv := relay.NewPublicServer(ts, companion)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	quit := make(chan os.Signal, 1)

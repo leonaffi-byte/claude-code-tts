@@ -66,8 +66,10 @@ type PublicServer struct {
 }
 
 // NewPublicServer creates a PublicServer. Call Serve() to begin listening.
-func NewPublicServer(token string, companion *CompanionHandler) *PublicServer {
-	h := NewAuthMiddleware(token, companion)
+// ts is the live TokenStore so the auth middleware always validates against the
+// current token even after a rotation.
+func NewPublicServer(ts *TokenStore, companion *CompanionHandler) *PublicServer {
+	h := NewAuthMiddleware(ts, companion)
 	return &PublicServer{handler: h}
 }
 
@@ -77,6 +79,9 @@ func (s *PublicServer) Handler() http.Handler {
 }
 
 // Serve starts the public server on addr. It blocks until the server closes.
+// WriteTimeout is intentionally 0 (disabled) because the /events endpoint is a
+// long-lived SSE stream; a finite write timeout would silently kill companion
+// connections after the deadline.
 func (s *PublicServer) Serve(addr string) error {
 	s.httpServer = &http.Server{
 		Addr:              addr,

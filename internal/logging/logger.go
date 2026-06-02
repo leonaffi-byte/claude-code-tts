@@ -69,12 +69,12 @@ func newLogger() (*Logger, error) {
 	}
 
 	logDir := filepath.Join(homeDir, ".claude", "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
 	logPath := filepath.Join(logDir, "tts-server.log")
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
 	}
@@ -102,7 +102,7 @@ func (l *Logger) rotate() error {
 	backupPath := l.filePath + "." + time.Now().Format("2006-01-02-150405")
 	os.Rename(l.filePath, backupPath)
 
-	file, err := os.OpenFile(l.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(l.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
