@@ -14,13 +14,14 @@ import (
 // injected at construction time so tests can supply mocks without touching real
 // network or disk.
 type Handler struct {
-	synth       Synthesizer
-	store       *ClipStore
-	hub         *SSEHub         // nil-safe; broadcast is skipped when nil
-	ts          *TokenStore     // nil-safe; rotation disabled when nil
-	qrPrinter   func(string) error
-	pushSender  PushSenderIface // nil-safe; push is skipped when nil
-	clipBaseURL string          // base URL prepended to clip IDs in push payloads
+	synth           Synthesizer
+	store           *ClipStore
+	hub             *SSEHub          // nil-safe; broadcast is skipped when nil
+	ts              *TokenStore      // nil-safe; rotation disabled when nil
+	qrPrinter       func(string) error
+	pushSender      PushSenderIface  // nil-safe; push is skipped when nil
+	clipBaseURL     string           // base URL prepended to clip IDs in push payloads
+	presenceTracker PresenceTracker  // nil-safe; when nil, push is never suppressed
 }
 
 // NewHandler creates an HTTP handler backed by the given Synthesizer, store, and hub.
@@ -53,6 +54,16 @@ func (h *Handler) WithPushSender(ps PushSenderIface) *Handler {
 // is also empty; the service worker degrades gracefully.
 func (h *Handler) WithClipBaseURL(url string) *Handler {
 	h.clipBaseURL = url
+	return h
+}
+
+// WithPresenceTracker attaches a PresenceTracker that is consulted on each
+// ingest to decide whether to suppress the Web Push notification. When the
+// tracker reports a live foreground listener, push is suppressed (the clip
+// already auto-plays via SSE). When nil, push is never suppressed (legacy
+// behaviour).
+func (h *Handler) WithPresenceTracker(pt PresenceTracker) *Handler {
+	h.presenceTracker = pt
 	return h
 }
 
@@ -115,12 +126,17 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.pushSender != nil {
-		clipURL := ""
-		if h.clipBaseURL != "" {
-			clipURL = h.clipBaseURL + "/clips/" + id
-		}
-		if sendErr := h.pushSender.Send(id, clipURL); sendErr != nil {
-			logging.Error("push send failed: %v", sendErr)
+		// Suppress push when a foreground SSE listener is connected — the clip
+		// already auto-plays in the companion. Send push only when no live
+		// listener is present (AFK / companion not open).
+		if h.presenceTracker == nil || !h.presenceTracker.HasLiveListener() {
+			clipURL := ""
+			if h.clipBaseURL != "" {
+				clipURL = h.clipBaseURL + "/clips/" + id
+			}
+			if sendErr := h.pushSender.Send(id, clipURL); sendErr != nil {
+				logging.Error("push send failed: %v", sendErr)
+			}
 		}
 	}
 

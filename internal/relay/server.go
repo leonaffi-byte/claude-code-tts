@@ -19,7 +19,8 @@ type Server struct {
 // hub so they can be shared with the CompanionHandler. ts may be nil if token
 // rotation is not required.
 func NewServer(addr string, synth Synthesizer, store *ClipStore, hub *SSEHub) (*Server, error) {
-	handler := NewHandler(synth, store, hub)
+	handler := NewHandler(synth, store, hub).
+		WithPresenceTracker(hub)
 
 	mux := http.NewServeMux()
 	mux.Handle("/ingest", handler)
