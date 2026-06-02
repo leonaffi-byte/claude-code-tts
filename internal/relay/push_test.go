@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -216,6 +217,170 @@ func TestPushSender_Send_410OnFirstSub_PrunesOnlyFirst(t *testing.T) {
 	if !found2 {
 		t.Errorf("subscription %q was incorrectly removed — only 410 subscriptions should be pruned", ep2)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Test E: Send with no subscriptions returns nil
+// ---------------------------------------------------------------------------
+
+// TestPushSender_Send_NoSubscriptions_ReturnsNil verifies that calling Send on a
+// PushSender with no registered subscriptions returns nil and does not invoke
+// the transport at all.
+func TestPushSender_Send_NoSubscriptions_ReturnsNil(t *testing.T) {
+	transport := newMockTransport()
+	sender := NewPushSender(transport)
+
+	err := sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+	if err != nil {
+		t.Errorf("Send with no subscriptions returned unexpected error: %v", err)
+	}
+	if len(transport.calls) != 0 {
+		t.Errorf("expected 0 transport calls with no subscriptions, got %d", len(transport.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test F: AddSubscription after Send is visible on the next Send
+// ---------------------------------------------------------------------------
+
+// TestPushSender_AddSubscription_AfterSend_IsIncludedInNextSend verifies that
+// registering a new subscription between two Send calls means the subscription
+// receives the second notification (not just the first). This guards against
+// implementations that snapshot the subscriber list at construction time.
+func TestPushSender_AddSubscription_AfterSend_IsIncludedInNextSend(t *testing.T) {
+	transport := newMockTransport()
+	sender := NewPushSender(transport)
+
+	const epFirst = "https://push.example.com/first"
+	const epLate = "https://push.example.com/late"
+
+	sender.AddSubscription(pushSub(epFirst))
+
+	// First Send — only epFirst should be called.
+	_ = sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+
+	if transport.callCount(epFirst) != 1 {
+		t.Errorf("first Send: expected 1 call to epFirst, got %d", transport.callCount(epFirst))
+	}
+	if transport.callCount(epLate) != 0 {
+		t.Errorf("first Send: expected 0 calls to epLate (not yet added), got %d", transport.callCount(epLate))
+	}
+
+	// Register epLate between the two Sends.
+	sender.AddSubscription(pushSub(epLate))
+
+	// Second Send — both subscriptions must be called.
+	_ = sender.Send("clip-002", "https://relay.example.com/clips/clip-002")
+
+	if transport.callCount(epFirst) != 2 {
+		t.Errorf("second Send: expected 2 total calls to epFirst, got %d", transport.callCount(epFirst))
+	}
+	if transport.callCount(epLate) != 1 {
+		t.Errorf("second Send: expected 1 call to epLate, got %d", transport.callCount(epLate))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test G: Multiple 410 responses in one Send prune all of them
+// ---------------------------------------------------------------------------
+
+// TestPushSender_Send_Multiple410s_PrunesAll verifies that when three
+// subscriptions are registered and two of them return 410, both are pruned
+// while the third is retained. This guards against implementations that only
+// prune the first 410 and leave subsequent ones in the list.
+func TestPushSender_Send_Multiple410s_PrunesAll(t *testing.T) {
+	transport := newMockTransport()
+	const ep1 = "https://push.example.com/gone-1"
+	const ep2 = "https://push.example.com/ok"
+	const ep3 = "https://push.example.com/gone-2"
+	transport.returnStatus(ep1, 410)
+	transport.returnStatus(ep3, 410)
+
+	sender := NewPushSender(transport)
+	sender.AddSubscription(pushSub(ep1))
+	sender.AddSubscription(pushSub(ep2))
+	sender.AddSubscription(pushSub(ep3))
+
+	_ = sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+
+	subs := sender.Subscriptions()
+
+	// ep2 must still be present.
+	foundOK := false
+	for _, s := range subs {
+		if s.Endpoint == ep2 {
+			foundOK = true
+		}
+		if s.Endpoint == ep1 {
+			t.Errorf("subscription %q was not pruned after 410 response", ep1)
+		}
+		if s.Endpoint == ep3 {
+			t.Errorf("subscription %q was not pruned after 410 response", ep3)
+		}
+	}
+	if !foundOK {
+		t.Errorf("subscription %q was incorrectly removed — only 410 subscriptions should be pruned", ep2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test H: Concurrent sends do not race (goroutine-safety)
+// ---------------------------------------------------------------------------
+
+// safeMockTransport is a goroutine-safe PushTransport used only in the
+// concurrent test. It uses its own mutex so multiple goroutines may call Send
+// simultaneously without a data race inside the mock itself.
+type safeMockTransport struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *safeMockTransport) Send(_ PushSubscription, _ []byte) (int, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	return 201, nil
+}
+
+func (s *safeMockTransport) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestPushSender_ConcurrentSends_NoDataRace verifies that concurrent calls to
+// Send and AddSubscription do not produce data races. It uses a goroutine-safe
+// mock transport (safeMockTransport) so the race detector only fires if the
+// PushSender itself has unsynchronised access. The test also asserts that every
+// goroutine's Send call delivers the pre-seeded subscription at least once.
+func TestPushSender_ConcurrentSends_NoDataRace(t *testing.T) {
+	transport := &safeMockTransport{}
+	sender := NewPushSender(transport)
+
+	// Pre-load one subscription so every Send delivers at least one notification.
+	sender.AddSubscription(pushSub("https://push.example.com/base"))
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := range goroutines {
+		go func(n int) {
+			defer wg.Done()
+			// Interleave AddSubscription and Send from multiple goroutines.
+			sender.AddSubscription(pushSub("https://push.example.com/concurrent-" + string(rune('a'+n))))
+			_ = sender.Send("clip-concurrent", "https://relay.example.com/clips/concurrent")
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Each goroutine called Send once; with at least 1 subscription alive,
+	// the total call count must be at least goroutines.
+	if got := transport.callCount(); got < goroutines {
+		t.Errorf("expected at least %d transport calls, got %d", goroutines, got)
+	}
+	// If we reach here without the race detector firing, goroutine safety holds.
 }
 
 // ---------------------------------------------------------------------------

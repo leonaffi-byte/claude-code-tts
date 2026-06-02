@@ -462,6 +462,52 @@ func TestHandler_PostIngest_CallsPushSenderWithNewClipID(t *testing.T) {
 	}
 }
 
+// TestHandler_PostIngest_ClipURLInPushPayload_StartsWithBaseURL verifies that
+// when a clipBaseURL is configured, the push sender receives a clipURL that
+// begins with "<clipBaseURL>/clips/" followed by the clip ID. This ensures
+// the service worker can reconstruct the fetch URL from the push payload.
+func TestHandler_PostIngest_ClipURLInPushPayload_StartsWithBaseURL(t *testing.T) {
+	synth := &mockSynthesizer{audioData: []byte("fake-mp3")}
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	ps := &mockPushSender{}
+
+	const baseURL = "https://relay.example.com"
+	handler := NewHandler(synth, store, hub).
+		WithPushSender(ps).
+		WithClipBaseURL(baseURL)
+
+	body := bytes.NewBufferString(`{"text": "check clip url"}`)
+	req := httptest.NewRequest(http.MethodPost, "/ingest", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("response not valid JSON: %v", err)
+	}
+	id := resp["id"]
+	if id == "" {
+		t.Fatal("response JSON has no 'id' field")
+	}
+
+	if len(ps.sendCalls) != 1 {
+		t.Fatalf("expected 1 push Send call, got %d", len(ps.sendCalls))
+	}
+
+	wantURL := baseURL + "/clips/" + id
+	gotURL := ps.sendCalls[0].clipURL
+	if gotURL != wantURL {
+		t.Errorf("push clipURL = %q, want %q", gotURL, wantURL)
+	}
+}
+
 // TestHandler_PostIngest_NilPushSender_DoesNotPanic verifies that when no push
 // sender is configured (nil), a successful ingest still returns 200 without
 // panicking. Push is an optional dependency.

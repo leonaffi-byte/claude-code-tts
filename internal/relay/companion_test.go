@@ -562,6 +562,26 @@ func TestCompanionHandler_PostPushSubscribe_MissingEndpoint_Returns400(t *testin
 	}
 }
 
+// TestCompanionHandler_PostPushSubscribe_NilSender_Returns503 verifies that when
+// no PushSender is wired, POST /push/subscribe returns 503 Service Unavailable
+// rather than panicking. Push is an optional dependency.
+func TestCompanionHandler_PostPushSubscribe_NilSender_Returns503(t *testing.T) {
+	store := NewClipStore(10)
+	hub := NewSSEHub()
+	handler := NewCompanionHandler(store, hub, nil) // deliberately no WithPushSender
+
+	body := `{"endpoint":"https://push.example.com/abc","keys":{"p256dh":"dGVzdA==","auth":"dGVzdA=="}}`
+	req := httptest.NewRequest(http.MethodPost, "/push/subscribe", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /push/subscribe with nil sender: expected 503, got %d — body: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestCompanionHandler_GetPushSubscribe_Returns405 verifies that a GET to
 // /push/subscribe is rejected with 405 Method Not Allowed.
 func TestCompanionHandler_GetPushSubscribe_Returns405(t *testing.T) {
