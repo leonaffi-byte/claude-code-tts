@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint run relay help
+.PHONY: build install clean test test-hooks lint run relay help
 
 # Variables
 BINARY_NAME=tts-server
@@ -36,11 +36,16 @@ install: build
 	@mkdir -p $(INSTALL_DIR)/bin
 	@mkdir -p $(INSTALL_DIR)/.claude
 	@mkdir -p $(INSTALL_DIR)/hooks
+	@mkdir -p -m 0700 $(HOME)/.claude/run
 	@cp bin/$(BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(CLI_BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(RELAY_BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp hooks/auto-speak.sh $(INSTALL_DIR)/hooks/
 	@chmod +x $(INSTALL_DIR)/hooks/auto-speak.sh
+	@cp hooks/relay-start.sh $(INSTALL_DIR)/hooks/
+	@chmod +x $(INSTALL_DIR)/hooks/relay-start.sh
+	@cp hooks/relay-stop.sh $(INSTALL_DIR)/hooks/
+	@chmod +x $(INSTALL_DIR)/hooks/relay-stop.sh
 	@cp plugin.json $(INSTALL_DIR)/
 	@cp .mcp.json $(INSTALL_DIR)/
 	@cp .claude/settings.json $(INSTALL_DIR)/.claude/
@@ -67,6 +72,11 @@ clean:
 test:
 	@echo "Running tests..."
 	$(GO) test -v ./...
+
+## test-hooks: Run bash-based hook lifecycle tests
+test-hooks:
+	@echo "Running hook lifecycle tests..."
+	sh hooks/relay-lifecycle_test.sh
 
 ## test-coverage: Run tests with coverage
 test-coverage:

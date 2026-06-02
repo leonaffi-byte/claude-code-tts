@@ -173,7 +173,7 @@ func TestCompanionHandler_GetClip_KnownID_Returns200WithMP3Bytes(t *testing.T) {
 		t.Errorf("GET /clips/%s: expected Content-Type audio/mpeg, got %q", id, ct)
 	}
 
-	if string(w.Body.Bytes()) != string(audioBytes) {
+	if w.Body.String() != string(audioBytes) {
 		t.Errorf("GET /clips/%s: body bytes mismatch: got %v, want %v", id, w.Body.Bytes(), audioBytes)
 	}
 }
