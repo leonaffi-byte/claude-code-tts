@@ -30,6 +30,9 @@ func (r fakeResolver) Resolve(profile string) (tts.Provider, tts.Request, error)
 	if r.err != nil {
 		return nil, tts.Request{}, r.err
 	}
+	if profile == "" {
+		return nil, tts.Request{}, errors.New("empty profile")
+	}
 	return r.prov, tts.Request{Voice: "v"}, nil
 }
 func (r fakeResolver) ResolveVoice(provider, voice string, speed float64) (tts.Provider, tts.Request, error) {
@@ -142,6 +145,20 @@ func TestWorkerPool_JobHistoryLimit(t *testing.T) {
 	if got > 100 {
 		t.Errorf("jobHistory = %d, want <= 100", got)
 	}
+}
+
+func TestWorkerPool_NoProfileUsesDefault(t *testing.T) {
+	player := &fakePlayer{}
+	wp := NewWorkerPool(okResolver("mp3"), player, 1, 4)
+	wp.Start()
+	defer wp.Stop()
+	// With neither profile nor provider set, the worker must resolve via
+	// Default() (env-aware). fakeResolver.Resolve("") errors, so a regression
+	// that called Resolve(job.Profile) here would fail the job instead.
+	if _, err := wp.Submit(SpeakRequest{Text: "hi"}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 }, "played via Default()")
 }
 
 func TestWorkerPool_StartStop(t *testing.T) {

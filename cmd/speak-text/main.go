@@ -13,7 +13,7 @@ import (
 
 func main() {
 	providerFlag := flag.String("provider", "", "Use an explicit provider (openai, grok, piper) instead of a profile")
-	profile := flag.String("profile", "default", "Voice profile from config")
+	profile := flag.String("profile", "", "Voice profile from config (default: the configured default profile / CLAUDE_TTS_* env)")
 	voice := flag.String("voice", "", "Override the profile's voice")
 	speed := flag.Float64("speed", 0, "Override speech speed (0 = profile default)")
 	flag.Usage = func() {
@@ -38,17 +38,21 @@ func main() {
 	var prov tts.Provider
 	var req tts.Request
 	var err error
-	if *providerFlag != "" {
+	switch {
+	case *providerFlag != "":
 		prov, req, err = reg.ResolveVoice(*providerFlag, *voice, *speed)
-	} else {
+	case *profile != "":
 		prov, req, err = reg.Resolve(*profile)
-		if err == nil {
-			if *voice != "" {
-				req.Voice = *voice
-			}
-			if *speed != 0 {
-				req.Speed = *speed
-			}
+	default:
+		// No explicit profile/provider: honor CLAUDE_TTS_* env + configured default.
+		prov, req, err = reg.Default()
+	}
+	if err == nil {
+		if *voice != "" {
+			req.Voice = *voice
+		}
+		if *speed != 0 {
+			req.Speed = *speed
 		}
 	}
 	if err != nil {

@@ -138,22 +138,26 @@ func (wp *WorkerPool) processJob(job *Job) {
 	var provider tts.Provider
 	var req tts.Request
 	var err error
-	if job.Provider != "" {
+	switch {
+	case job.Provider != "":
 		provider, req, err = wp.resolver.ResolveVoice(job.Provider, job.Voice, job.Speed)
-	} else {
+	case job.Profile != "":
 		provider, req, err = wp.resolver.Resolve(job.Profile)
-		if err == nil {
-			if job.Voice != "" {
-				req.Voice = job.Voice
-			}
-			if job.Speed != 0 {
-				req.Speed = job.Speed
-			}
-		}
+	default:
+		// No explicit profile/provider: honor CLAUDE_TTS_* env overrides plus the
+		// configured default profile.
+		provider, req, err = wp.resolver.Default()
 	}
 	if err != nil {
 		wp.failJob(job, fmt.Errorf("resolve: %w", err), startTime)
 		return
+	}
+	// Explicit tool args take precedence over the resolved request.
+	if job.Voice != "" {
+		req.Voice = job.Voice
+	}
+	if job.Speed != 0 {
+		req.Speed = job.Speed
 	}
 	req.Text = job.Text
 

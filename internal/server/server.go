@@ -103,19 +103,21 @@ func (s *Server) handleSpeak(ctx context.Context, request mcp.CallToolRequest) (
 	if v, ok := request.Params.Arguments["speed"].(float64); ok {
 		speed = v
 	}
-	if profile == "" && provider == "" {
-		profile = "default"
-	}
 
+	// Leave profile/provider empty when not given: the worker then resolves via
+	// the registry Default() path, which honors CLAUDE_TTS_* env overrides and
+	// the configured default profile.
 	job, err := s.workerPool.Submit(SpeakRequest{
 		Text: text, Profile: profile, Provider: provider, Voice: voice, Speed: speed,
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to queue TTS job: %v", err)), nil
 	}
-	sel := profile
+	sel := "default"
 	if provider != "" {
 		sel = "provider:" + provider
+	} else if profile != "" {
+		sel = profile
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("TTS job queued (ID: %s, %s)", job.ID, sel)), nil
 }
