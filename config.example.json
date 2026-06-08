@@ -1,0 +1,14 @@
+{
+  "default_provider": "openai",
+  "default_profile": "default",
+  "providers": {
+    "openai": { "api_key_env": "OPENAI_API_KEY", "model": "tts-1" },
+    "grok":   { "api_key_env": "XAI_API_KEY", "language": "auto" },
+    "piper":  { "binary": "piper", "model_dir": "~/.claude/plugins/claude-code-tts/piper" }
+  },
+  "profiles": {
+    "default": { "provider": "openai", "voice": "alloy", "speed": 1.0 },
+    "error":   { "provider": "openai", "voice": "onyx",  "speed": 1.0 },
+    "offline": { "provider": "piper",  "voice": "en_US-amy-medium" }
+  }
+}

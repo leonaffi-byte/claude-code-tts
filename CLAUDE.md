@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Text-to-Speech MCP server plugin for Claude Code written in Go. It converts text to speech using OpenAI's TTS API and plays audio via platform-native players.
+A Text-to-Speech MCP server plugin for Claude Code written in Go. It converts text to speech using a pluggable provider abstraction (OpenAI, Grok/xAI, or local Piper) and plays audio via platform-native players. Provider selection and voice profiles are configured via `~/.claude/plugins/claude-code-tts/config.json` (or `CLAUDE_TTS_CONFIG`) with runtime overrides via `CLAUDE_TTS_*` environment variables.
 
 ## Commands
 
@@ -34,28 +34,39 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  cmd/tts-server/main.go                                     │
-│    Entry point - validates OPENAI_API_KEY, creates server   │
+│    Entry point - loads ttsconfig.Registry, creates server   │
+│    (no hard OPENAI_API_KEY requirement; keys per-provider)  │
 │                                                             │
 │  internal/server/                                           │
 │    server.go: MCP server setup, tool registration           │
-│      - speak(text, voice) → queues TTS job                  │
+│      - speak(text, profile, provider, voice, speed)         │
 │      - tts_status() → returns pool stats as JSON            │
 │                                                             │
 │    worker.go: Worker pool (2 workers, 50-slot queue)        │
 │      - Concurrent job processing with goroutines            │
 │      - Job history tracking (last 100 jobs)                 │
 │      - Atomic counters for processed/failed stats           │
+│      - Injectable synthResolver (ttsconfig.Registry) +      │
+│        audioPlayer (audio.Player)                           │
 │                                                             │
 │  internal/tts/                                              │
-│    openai.go: OpenAI TTS API client                         │
-│      - POST /v1/audio/speech with tts-1 model               │
-│      - Returns MP3 audio bytes                              │
+│    provider.go: Provider interface, Request, Audio types    │
+│    openai.go: OpenAIProvider — POST /v1/audio/speech        │
+│    grok.go:   GrokProvider   — xAI TTS API, returns MP3     │
+│    piper.go:  PiperProvider  — local binary, returns WAV    │
+│      (Piper is local-playback only; relay requires OpenAI   │
+│       or Grok)                                              │
+│                                                             │
+│  internal/ttsconfig/                                        │
+│    config.go:   Config structs, loadConfig, DefaultConfig   │
+│    registry.go: Registry — Load/LoadOrDefault, Resolve,     │
+│      ResolveVoice, Default (with CLAUDE_TTS_* env overrides)│
 │                                                             │
 │  internal/audio/                                            │
-│    player.go: Cross-platform audio playback                 │
-│      - Mutex-protected (one audio at a time)                │
+│    player.go: Cross-platform, format-aware audio playback   │
+│      - Play(data []byte, format string)                     │
 │      - macOS: afplay, Linux: mpv/ffplay/mpg123              │
-│      - Windows: PowerShell Media.SoundPlayer                │
+│      - Windows: MP3 via mpg123/ffplay, WAV via PowerShell   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,15 +76,33 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 - **Mutex-Protected Playback**: `audio.Player` ensures no overlapping audio
 - **Job Queue**: Channel-based with 50 slots; returns error when full
 - **MCP Protocol**: Uses `mcp-go` library for stdio-based communication with Claude Code
+- **Provider Abstraction**: `tts.Provider` interface with `Synthesize(ctx, Request) (Audio, error)` implemented by OpenAI, Grok, and Piper
+- **Registry Pattern**: `ttsconfig.Registry` loads config + resolves named profiles and env overrides to a `(Provider, Request)` pair
+- **Format-Aware Playback**: `audio.Player.Play(data, format)` chooses the right player command for MP3 vs WAV
 
 ## Environment
 
-- **Required**: `OPENAI_API_KEY` environment variable
-- **Go Version**: 1.21+ (go.mod specifies 1.23)
+- **Optional** (no hard requirement): `OPENAI_API_KEY` — required only when the OpenAI provider is used
+- **Optional**: `XAI_API_KEY` — required only when the Grok provider is used
+- **Go Version**: 1.23 (go.mod)
+
+### Configuration env vars
+
+| Variable | Description |
+|----------|-------------|
+| `CLAUDE_TTS_CONFIG` | Path to config JSON (default: `~/.claude/plugins/claude-code-tts/config.json`) |
+| `CLAUDE_TTS_PROFILE` | Named profile to use instead of the configured default |
+| `CLAUDE_TTS_PROVIDER` | Explicit provider (`openai`, `grok`, `piper`); bypasses profile selection |
+| `CLAUDE_TTS_VOICE` | Override voice for the resolved provider/profile |
+| `CLAUDE_TTS_SPEED` | Override speech speed (float) |
+| `CLAUDE_TTS_MODEL` | Override model name (e.g. `tts-1-hd`) |
 
 ## MCP Tools
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `speak` | `text` (required), `voice` (optional: alloy, echo, fable, onyx, nova, shimmer) | Queue TTS job |
+| `speak` | `text` (required), `profile`, `provider`, `voice`, `speed` | Queue TTS job |
 | `tts_status` | none | Get queue/worker stats |
+| `tts_pause` | none | Pause job processing |
+| `tts_resume` | none | Resume job processing |
+| `tts_clear` | none | Clear pending jobs |

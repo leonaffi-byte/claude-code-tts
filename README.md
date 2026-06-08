@@ -53,6 +53,77 @@ export OPENAI_API_KEY="sk-..."
 
 Or add to your shell profile (`~/.zshrc` or `~/.bashrc`).
 
+## Providers & Configuration
+
+### Providers
+
+Three TTS providers are supported:
+
+| Provider | Description | API Key env var |
+|----------|-------------|-----------------|
+| `openai` | OpenAI TTS API (`tts-1`). Voices: alloy, echo, fable, onyx, nova, shimmer. | `OPENAI_API_KEY` |
+| `grok` | xAI Grok TTS API. Voices: eve, leo, and others from xAI. | `XAI_API_KEY` |
+| `piper` | Local synthesis via the [Piper](https://github.com/rhasspy/piper) binary. No API key required. **Local playback only** — cannot be used with the relay/companion path. | _(none)_ |
+
+> **API keys come only from environment variables.** They are never stored in the config file.
+> The relay/companion path requires OpenAI or Grok (a cloud provider). Piper is local-playback only.
+
+### Config file
+
+Place your config at:
+
+```
+~/.claude/plugins/claude-code-tts/config.json
+```
+
+Override the path with the `CLAUDE_TTS_CONFIG` environment variable.
+
+If no config file is present, the plugin falls back to the OpenAI default (model `tts-1`, voice `alloy`, speed `1.0`).
+
+Copy `config.example.json` from the repo root to get started:
+
+```bash
+cp config.example.json ~/.claude/plugins/claude-code-tts/config.json
+```
+
+Example `config.json`:
+
+```json
+{
+  "default_provider": "openai",
+  "default_profile": "default",
+  "providers": {
+    "openai": { "api_key_env": "OPENAI_API_KEY", "model": "tts-1" },
+    "grok":   { "api_key_env": "XAI_API_KEY", "language": "auto" },
+    "piper":  { "binary": "piper", "model_dir": "~/.claude/plugins/claude-code-tts/piper" }
+  },
+  "profiles": {
+    "default": { "provider": "openai", "voice": "alloy", "speed": 1.0 },
+    "error":   { "provider": "openai", "voice": "onyx",  "speed": 1.0 },
+    "offline": { "provider": "piper",  "voice": "en_US-amy-medium" }
+  }
+}
+```
+
+### Named profiles
+
+Profiles are named `(provider, voice, speed, model)` selections defined in `config.json`. The `speak` MCP tool and `speak-text` CLI both accept a `-profile` flag (CLI) or `profile` parameter (MCP tool) to select a profile by name.
+
+### Environment variable overrides
+
+These environment variables override the config file at runtime (no file edit needed):
+
+| Variable | Effect |
+|----------|--------|
+| `CLAUDE_TTS_CONFIG` | Path to config file (overrides default location) |
+| `CLAUDE_TTS_PROFILE` | Use the named profile instead of the configured default |
+| `CLAUDE_TTS_PROVIDER` | Use an explicit provider name, bypassing profiles |
+| `CLAUDE_TTS_VOICE` | Override the voice for the resolved profile or provider |
+| `CLAUDE_TTS_SPEED` | Override the speech speed (float, e.g. `1.2`) |
+| `CLAUDE_TTS_MODEL` | Override the model (e.g. `tts-1-hd`) |
+
+When `CLAUDE_TTS_PROVIDER` is set it takes priority and `CLAUDE_TTS_PROFILE` is ignored. All other overrides (`VOICE`, `SPEED`, `MODEL`) apply on top of whichever resolution path is active.
+
 ## Architecture
 
 ```
@@ -95,7 +166,7 @@ Or add to your shell profile (`~/.zshrc` or `~/.bashrc`).
 
 ## Usage
 
-### speak(text, voice)
+### speak(text, ...)
 
 Convert text to speech and play it aloud.
 
@@ -103,9 +174,12 @@ Convert text to speech and play it aloud.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `text` | string | Yes | Text to speak (max 4096 chars) |
-| `voice` | string | No | Voice to use (default: alloy) |
+| `profile` | string | No | Named voice profile from config (e.g. `default`, `error`) |
+| `provider` | string | No | Explicit provider: `openai`, `grok`, or `piper` |
+| `voice` | string | No | Override the profile's voice |
+| `speed` | number | No | Override speech speed (provider-dependent range) |
 
-**Available Voices:**
+**OpenAI Voices:**
 | Voice | Description |
 |-------|-------------|
 | `alloy` | Neutral, balanced |
@@ -115,9 +189,11 @@ Convert text to speech and play it aloud.
 | `nova` | Female, friendly |
 | `shimmer` | Soft female |
 
-**Example:**
+**Examples:**
 ```
-Use the speak tool to say "Build completed successfully!" with the nova voice.
+Use the speak tool to say "Build completed successfully!"
+Use the speak tool with profile "error" to say "Build failed"
+Use the speak tool with provider "grok" and voice "leo" to say "Done"
 ```
 
 ### tts_status()
@@ -156,8 +232,14 @@ A standalone binary for direct TTS without going through MCP:
 # Basic usage
 speak-text "Hello world"
 
-# With voice selection
-speak-text -voice onyx "Error occurred"
+# Use a named profile
+speak-text -profile error "Build failed"
+
+# Use an explicit provider and voice
+speak-text -provider grok -voice leo "Build failed"
+
+# Override speed
+speak-text -speed 1.2 "Deploying..."
 ```
 
 Located at `~/.claude/plugins/claude-code-tts/bin/speak-text` after installation.
