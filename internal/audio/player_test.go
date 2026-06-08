@@ -1,9 +1,48 @@
 package audio
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
+
+func TestBuildPlayCommand(t *testing.T) {
+	cases := []struct {
+		goos, format string
+		wantContains string // substring expected somewhere in name+args
+		wantErr      bool
+	}{
+		{"windows", "wav", "SoundPlayer", false},
+		{"windows", "mp3", "MediaPlayer", false},
+		{"darwin", "mp3", "afplay", false},
+		{"darwin", "wav", "afplay", false},
+		{"plan9", "mp3", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.goos+"_"+c.format, func(t *testing.T) {
+			cmd, err := buildPlayCommand(c.goos, c.format, "/tmp/x."+c.format)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("want error for %s/%s", c.goos, c.format)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			joined := cmd.Path + " " + strings.Join(cmd.Args, " ")
+			if !strings.Contains(joined, c.wantContains) {
+				t.Errorf("cmd %q missing %q", joined, c.wantContains)
+			}
+		})
+	}
+}
+
+func TestExtForFormat(t *testing.T) {
+	if extForFormat("wav") != ".wav" || extForFormat("mp3") != ".mp3" || extForFormat("") != ".mp3" {
+		t.Error("extForFormat mapping wrong")
+	}
+}
 
 func TestNewPlayer(t *testing.T) {
 	player := NewPlayer()
@@ -54,7 +93,7 @@ func TestPlayer_Play_InvalidData(t *testing.T) {
 
 	// Empty audio data should still try to play (and fail at the player level)
 	// This tests that the mutex and temp file logic works
-	err := player.Play([]byte{})
+	err := player.Play([]byte{}, "wav")
 
 	// Expect an error because empty file won't be valid audio
 	// The specific error depends on the platform audio player
@@ -100,7 +139,7 @@ func TestPlayer_ConcurrentPlayAttempts(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Use invalid data to trigger fast failure
-			err := player.Play([]byte("not-valid-mp3"))
+			err := player.Play([]byte("not-valid-mp3"), "wav")
 			if err != nil {
 				errors <- err
 			}
@@ -160,7 +199,7 @@ func TestPlayer_Play_CreatesAndRemovesTempFile(t *testing.T) {
 	player := NewPlayer()
 
 	// This will fail (invalid audio), but should still create and clean up temp file
-	_ = player.Play([]byte("fake-audio-data"))
+	_ = player.Play([]byte("fake-audio-data"), "wav")
 
 	// We can't directly verify the temp file was deleted since it's cleaned up
 	// before the function returns, but we can verify no panic occurred
@@ -171,7 +210,7 @@ func TestPlayer_IsPlaying_AfterPlayFailure(t *testing.T) {
 	player := NewPlayer()
 
 	// Try to play invalid data (will fail)
-	_ = player.Play([]byte("invalid"))
+	_ = player.Play([]byte("invalid"), "wav")
 
 	// After failed play, isPlaying should be false
 	if player.IsPlaying() {
@@ -198,7 +237,7 @@ func TestPlayer_MutexProtectsIsPlaying(t *testing.T) {
 func TestPlayer_Play_EmptyData(t *testing.T) {
 	player := NewPlayer()
 
-	err := player.Play([]byte{})
+	err := player.Play([]byte{}, "wav")
 
 	// Empty data should still try to play (and likely fail at player level)
 	// We're testing that it doesn't panic or hang
@@ -217,7 +256,7 @@ func TestPlayer_Play_LargeData(t *testing.T) {
 	}
 
 	// This will fail (invalid audio), but tests that large data doesn't panic
-	err := player.Play(largeData)
+	err := player.Play(largeData, "wav")
 
 	if err == nil {
 		t.Log("Note: Large invalid data was accepted")
@@ -229,7 +268,7 @@ func TestPlayer_Play_NilData(t *testing.T) {
 	player := NewPlayer()
 
 	// nil data should be handled gracefully
-	err := player.Play(nil)
+	err := player.Play(nil, "wav")
 
 	// Should likely fail, but shouldn't panic
 	if err == nil {
@@ -242,7 +281,7 @@ func TestPlayer_Sequential_Plays(t *testing.T) {
 
 	// Multiple sequential plays should work (even if they fail due to invalid data)
 	for i := 0; i < 5; i++ {
-		_ = player.Play([]byte("test-data"))
+		_ = player.Play([]byte("test-data"), "wav")
 
 		// After each play, isPlaying should be false
 		if player.IsPlaying() {
@@ -259,7 +298,7 @@ func TestPlayer_IsPlaying_DuringPlay(t *testing.T) {
 	go func() {
 		defer close(done)
 		// Use invalid data for quick failure
-		_ = player.Play([]byte("test"))
+		_ = player.Play([]byte("test"), "wav")
 	}()
 
 	// Wait for completion
