@@ -61,6 +61,18 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │    config.go:   Config structs, loadConfig, DefaultConfig   │
 │    registry.go: Registry — Load/LoadOrDefault, Resolve,     │
 │      ResolveVoice, Default (with CLAUDE_TTS_* env overrides)│
+│      TelegramSender() — builds telegram.Sender from config  │
+│                                                             │
+│  internal/voicemode/                                        │
+│    voicemode.go: Mode type (Off/Computer/Phone/Both),       │
+│      Valid, PlaysLocal, SendsTelegram; Store.Get/Set        │
+│      persisted to ~/.claude/plugins/claude-code-tts/        │
+│      state.json (overridable via CLAUDE_TTS_STATE)          │
+│                                                             │
+│  internal/telegram/                                         │
+│    telegram.go: Sender.SendAudio(ctx, []byte, caption)      │
+│      — posts MP3 to Telegram Bot API (sendAudio); token     │
+│      redacted from all error messages                       │
 │                                                             │
 │  internal/audio/                                            │
 │    player.go: Cross-platform, format-aware audio playback   │
@@ -96,13 +108,16 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 | `CLAUDE_TTS_VOICE` | Override voice for the resolved provider/profile |
 | `CLAUDE_TTS_SPEED` | Override speech speed (float) |
 | `CLAUDE_TTS_MODEL` | Override model name (e.g. `tts-1-hd`) |
+| `CLAUDE_TTS_STATE` | Path to state JSON for persisted voice mode (default: `~/.claude/plugins/claude-code-tts/state.json`) |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (or use `telegram.bot_token_env` in config to name a different env var) |
 
 ## MCP Tools
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `speak` | `text` (required), `profile`, `provider`, `voice`, `speed` | Queue TTS job |
-| `tts_status` | none | Get queue/worker stats |
+| `tts_status` | none | Get queue/worker stats (includes `voice_mode` and `telegram_configured`) |
 | `tts_pause` | none | Pause job processing |
 | `tts_resume` | none | Resume job processing |
 | `tts_clear` | none | Clear pending jobs |
+| `tts_output` | `mode` (required: `off`/`computer`/`phone`/`both`) | Set the voice output destination; persisted across restarts |

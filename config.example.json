@@ -10,5 +10,6 @@
     "default": { "provider": "openai", "voice": "alloy", "speed": 1.0 },
     "error":   { "provider": "openai", "voice": "onyx",  "speed": 1.0 },
     "offline": { "provider": "piper",  "voice": "en_US-amy-medium" }
-  }
+  },
+  "telegram": { "bot_token_env": "TELEGRAM_BOT_TOKEN", "chat_id": "REPLACE_WITH_YOUR_CHAT_ID" }
 }

@@ -285,6 +285,94 @@ make install
 make test
 ```
 
+## Voice output & Telegram
+
+### Output modes
+
+The plugin supports four voice output modes:
+
+| Mode | Description |
+|------|-------------|
+| `off` | Silent — speech synthesis is skipped entirely |
+| `computer` | Play on the local machine's speakers (default) |
+| `phone` | Send to your phone via Telegram (no local playback) |
+| `both` | Play locally AND send to Telegram |
+
+The default mode is `computer`.
+
+### Setting the mode from chat
+
+Ask Claude to change the output mode — it will call the `tts_output` MCP tool automatically. Examples:
+
+```
+Turn the voice off
+Speak out loud
+Send the voice to my phone
+Use both speakers and phone
+```
+
+### Setting the mode from the CLI
+
+Use the `speak-text` binary's `mode` and `status` subcommands:
+
+```bash
+# Show the current mode
+speak-text mode
+
+# Set a new mode (off / computer / phone / both)
+speak-text mode phone
+speak-text mode off
+speak-text mode both
+
+# Show the current mode and Telegram configuration status
+speak-text status
+```
+
+### One-off delivery with `-to`
+
+To deliver a single clip to a specific destination without changing the saved mode:
+
+```bash
+speak-text -to phone "Deployment complete"
+speak-text -to both  "Tests passed"
+```
+
+`-to` accepts `computer`, `phone`, or `both` (not `off`).
+
+### Telegram setup
+
+Telegram delivery requires an MP3-capable provider (OpenAI or Grok). Piper produces WAV and cannot be used with Telegram.
+
+1. **Create a Telegram bot** via [@BotFather](https://t.me/BotFather) and note the bot token.
+
+2. **Set the token** in your environment (add to `~/.zshrc` or `~/.bashrc`):
+
+   ```bash
+   export TELEGRAM_BOT_TOKEN="123456789:ABCdef..."
+   ```
+
+3. **Find your chat id**: Message your bot once (any text), then open:
+
+   ```
+   https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
+   ```
+
+   The `"id"` field inside `"chat"` is your chat id.
+
+4. **Add the `telegram` section** to `~/.claude/plugins/claude-code-tts/config.json`:
+
+   ```json
+   "telegram": { "bot_token_env": "TELEGRAM_BOT_TOKEN", "chat_id": "YOUR_CHAT_ID" }
+   ```
+
+5. Verify the setup:
+
+   ```bash
+   speak-text status
+   # → voice mode: computer
+   # → telegram: configured
+   ```
+
 ## Troubleshooting
 
 ### "openai: OPENAI_API_KEY is not set" (or "grok: XAI_API_KEY is not set")
