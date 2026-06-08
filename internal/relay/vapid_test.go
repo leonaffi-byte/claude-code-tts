@@ -2,11 +2,15 @@ package relay
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestVAPIDStore_LoadOrGenerate_PrivateKeyFilePermissions_Are0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not honor Unix file permission bits (0600); this guarantee is Linux/macOS only")
+	}
 	dir := t.TempDir()
 	vs := NewVAPIDStore(dir)
 
