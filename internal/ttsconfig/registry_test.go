@@ -115,3 +115,35 @@ func TestRegistry_DefaultProviderEnvOverride(t *testing.T) {
 		t.Errorf("got %s/%q, want openai/onyx", prov.Name(), req.Voice)
 	}
 }
+
+func TestRegistry_TelegramSender(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "tok")
+
+	// Configured -> sender.
+	cfg := testConfig()
+	cfg.Telegram = &TelegramConfig{BotTokenEnv: "TELEGRAM_BOT_TOKEN", ChatID: "42"}
+	if s, reason := mustRegistry(t, cfg).TelegramSender(); s == nil {
+		t.Fatalf("expected a sender, got nil (reason=%q)", reason)
+	}
+
+	// Missing chat id -> nil + reason.
+	cfg2 := testConfig()
+	cfg2.Telegram = &TelegramConfig{BotTokenEnv: "TELEGRAM_BOT_TOKEN", ChatID: ""}
+	if s2, r2 := mustRegistry(t, cfg2).TelegramSender(); s2 != nil || r2 == "" {
+		t.Errorf("expected nil sender + reason for missing chat id, got %v/%q", s2, r2)
+	}
+
+	// No telegram section -> nil + reason.
+	if s3, r3 := mustRegistry(t, testConfig()).TelegramSender(); s3 != nil || r3 == "" {
+		t.Errorf("expected nil sender + reason when unconfigured, got %v/%q", s3, r3)
+	}
+}
+
+func mustRegistry(t *testing.T, cfg *Config) *Registry {
+	t.Helper()
+	r, err := NewRegistry(cfg)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	return r
+}

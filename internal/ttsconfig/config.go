@@ -24,12 +24,20 @@ type Profile struct {
 	Model    string  `json:"model"`
 }
 
+// TelegramConfig configures Telegram delivery. The bot token is read from the
+// named environment variable; the chat id is stored directly (not secret).
+type TelegramConfig struct {
+	BotTokenEnv string `json:"bot_token_env"`
+	ChatID      string `json:"chat_id"`
+}
+
 // Config is the on-disk configuration.
 type Config struct {
 	DefaultProvider string                    `json:"default_provider"`
 	DefaultProfile  string                    `json:"default_profile"`
 	Providers       map[string]ProviderConfig `json:"providers"`
 	Profiles        map[string]Profile        `json:"profiles"`
+	Telegram        *TelegramConfig           `json:"telegram,omitempty"`
 }
 
 // DefaultConfig is the zero-config, back-compatible OpenAI setup.

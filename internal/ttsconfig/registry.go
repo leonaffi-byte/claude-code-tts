@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/ybouhjira/claude-code-tts/internal/telegram"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
 
@@ -142,6 +143,24 @@ func (r *Registry) Default() (tts.Provider, tts.Request, error) {
 		}
 	}
 	return prov, req, nil
+}
+
+// TelegramSender builds a Telegram sender from config + env, or returns
+// (nil, reason) describing why it is unavailable.
+func (r *Registry) TelegramSender() (*telegram.Sender, string) {
+	tc := r.cfg.Telegram
+	if tc == nil {
+		return nil, "no \"telegram\" section in config.json"
+	}
+	env := nameOr(tc.BotTokenEnv, "TELEGRAM_BOT_TOKEN")
+	token := os.Getenv(env)
+	if token == "" {
+		return nil, fmt.Sprintf("set $%s", env)
+	}
+	if tc.ChatID == "" {
+		return nil, "set telegram.chat_id in config.json"
+	}
+	return telegram.NewSender(token, tc.ChatID), ""
 }
 
 // nameOr returns name when non-empty, otherwise fallback. It returns an

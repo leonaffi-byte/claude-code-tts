@@ -49,3 +49,23 @@ func TestLoad_MalformedFileErrors(t *testing.T) {
 		t.Fatal("expected error for malformed JSON")
 	}
 }
+
+func TestLoadConfig_TelegramSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+      "default_provider":"openai",
+      "providers":{"openai":{"api_key_env":"OPENAI_API_KEY"}},
+      "profiles":{"default":{"provider":"openai","voice":"alloy"}},
+      "telegram":{"bot_token_env":"TELEGRAM_BOT_TOKEN","chat_id":"99"}
+    }`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_TTS_CONFIG", path)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Telegram == nil || cfg.Telegram.ChatID != "99" || cfg.Telegram.BotTokenEnv != "TELEGRAM_BOT_TOKEN" {
+		t.Errorf("telegram parse wrong: %+v", cfg.Telegram)
+	}
+}
