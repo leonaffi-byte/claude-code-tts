@@ -39,11 +39,16 @@ func TestPiperHelperProcess(t *testing.T) {
 	if out == "" {
 		os.Exit(2)
 	}
+	// Record the full arg list so the parent test can assert how piper was invoked.
+	if argsFile := os.Getenv("PIPER_ARGS_FILE"); argsFile != "" {
+		_ = os.WriteFile(argsFile, []byte(strings.Join(args, "\n")), 0o600)
+	}
 	_ = os.WriteFile(out, []byte("RIFFfakeWAV"), 0o600)
 	os.Exit(0)
 }
 
 func TestPiperProvider_Synthesize(t *testing.T) {
+	// Mutating the package-level execCommand is not safe under t.Parallel().
 	execCommand = fakeExecCommand
 	defer func() { execCommand = exec.CommandContext }()
 
@@ -54,6 +59,8 @@ func TestPiperProvider_Synthesize(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(modelDir, "en_US-amy-medium.onnx"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	argsFile := filepath.Join(modelDir, "args.txt")
+	t.Setenv("PIPER_ARGS_FILE", argsFile)
 
 	p := NewPiperProvider("piper", modelDir)
 	got, err := p.Synthesize(context.Background(), Request{Text: "hello", Voice: "en_US-amy-medium", Speed: 1.0})
@@ -65,6 +72,20 @@ func TestPiperProvider_Synthesize(t *testing.T) {
 	}
 	if got.Format != "wav" {
 		t.Errorf("format = %q, want wav", got.Format)
+	}
+
+	// Verify how piper was actually invoked: resolved model path and the
+	// length_scale = 1/speed mapping (speed 1.0 -> length_scale 1.000).
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args file: %v", err)
+	}
+	gotArgs := string(rawArgs)
+	if !strings.Contains(gotArgs, filepath.Join(modelDir, "en_US-amy-medium.onnx")) {
+		t.Errorf("piper args missing resolved model path; got:\n%s", gotArgs)
+	}
+	if !strings.Contains(gotArgs, "--length_scale\n1.000") {
+		t.Errorf("piper args missing '--length_scale 1.000'; got:\n%s", gotArgs)
 	}
 }
 
