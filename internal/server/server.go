@@ -31,6 +31,11 @@ func New() (*Server, error) {
 
 	wp := NewWorkerPool(reg, player, 2, 50).
 		WithMode(modeStore)
+	// Keep this if/else: do NOT collapse it to WithTelegram(tgSender, tgReason).
+	// tgSender is a *telegram.Sender, so when it's nil, passing it through the
+	// telegramSender interface yields a non-nil typed-nil interface and
+	// wp.telegram != nil would wrongly be true. The else branch passes a literal
+	// nil so the "telegram unavailable" checks work.
 	if tgSender != nil {
 		wp.WithTelegram(tgSender, "")
 	} else {

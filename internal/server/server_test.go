@@ -121,6 +121,10 @@ func TestHandleSetOutput(t *testing.T) {
 	if !strings.Contains(st.Content[0].(mcp.TextContent).Text, `"voice_mode": "phone"`) {
 		t.Errorf("tts_status missing voice_mode=phone:\n%s", st.Content[0].(mcp.TextContent).Text)
 	}
+	// This server has no telegram sender wired, so the status must report it as not configured.
+	if !strings.Contains(st.Content[0].(mcp.TextContent).Text, `"telegram_configured": false`) {
+		t.Errorf("tts_status missing telegram_configured=false:\n%s", st.Content[0].(mcp.TextContent).Text)
+	}
 
 	bad, _ := s.handleSetOutput(context.Background(), speakReq(map[string]any{"mode": "loud"}))
 	if !bad.IsError {

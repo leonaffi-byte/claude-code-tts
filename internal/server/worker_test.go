@@ -252,6 +252,9 @@ func TestWorkerPool_Mode_Both(t *testing.T) {
 	defer wp.Stop()
 	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 && tg.count() == 1 }, "played + sent")
+	if f := wp.GetStatus().TotalFailed; f != 0 {
+		t.Errorf("both-mode job should succeed, TotalFailed=%d", f)
+	}
 }
 
 func TestWorkerPool_Mode_Both_TelegramErrorStillPlaysLocal(t *testing.T) {
