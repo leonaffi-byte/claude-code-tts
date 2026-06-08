@@ -585,6 +585,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -627,7 +628,15 @@ func TestPiperProvider_Synthesize(t *testing.T) {
 	execCommand = fakeExecCommand
 	defer func() { execCommand = exec.CommandContext }()
 
-	p := NewPiperProvider("piper", t.TempDir())
+	// The provider stats the model file before running piper, so create a
+	// dummy model in the same dir we pass as modelDir (t.TempDir() returns a
+	// fresh dir each call — capture it once).
+	modelDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modelDir, "en_US-amy-medium.onnx"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewPiperProvider("piper", modelDir)
 	got, err := p.Synthesize(context.Background(), Request{Text: "hello", Voice: "en_US-amy-medium", Speed: 1.0})
 	if err != nil {
 		t.Fatalf("Synthesize: %v", err)
