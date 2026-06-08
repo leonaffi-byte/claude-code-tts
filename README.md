@@ -6,7 +6,7 @@
 [![codecov](https://codecov.io/gh/ybouhjira/claude-code-tts/branch/main/graph/badge.svg)](https://codecov.io/gh/ybouhjira/claude-code-tts)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 
-A Text-to-Speech MCP server plugin for Claude Code that converts text to speech using OpenAI's TTS API. Get audio feedback from Claude as you work!
+A Text-to-Speech MCP server plugin for Claude Code that converts text to speech using a pluggable provider abstraction — OpenAI, Grok (xAI), or local offline Piper — selectable via named voice profiles. Get audio feedback from Claude as you work! See [Providers & Configuration](#providers--configuration) below.
 
 ![Demo](demo.gif)
 
@@ -287,10 +287,11 @@ make test
 
 ## Troubleshooting
 
-### "OPENAI_API_KEY environment variable is required"
-Set your OpenAI API key:
+### "openai: OPENAI_API_KEY is not set" (or "grok: XAI_API_KEY is not set")
+The server no longer requires a key at startup — keys are checked per-provider when a clip is synthesized. Set the key for whichever provider your active profile uses:
 ```bash
-export OPENAI_API_KEY="sk-..."
+export OPENAI_API_KEY="sk-..."   # OpenAI provider
+export XAI_API_KEY="xai-..."     # Grok provider
 ```
 
 ### "No suitable audio player found on Linux"

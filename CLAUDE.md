@@ -66,7 +66,7 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │    player.go: Cross-platform, format-aware audio playback   │
 │      - Play(data []byte, format string)                     │
 │      - macOS: afplay, Linux: mpv/ffplay/mpg123              │
-│      - Windows: MP3 via mpg123/ffplay, WAV via PowerShell   │
+│      - Windows: MP3 via WPF MediaPlayer, WAV via SoundPlayer│
 └─────────────────────────────────────────────────────────────┘
 ```
 
