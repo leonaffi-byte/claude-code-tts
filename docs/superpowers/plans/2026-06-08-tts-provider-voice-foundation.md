@@ -1379,14 +1379,17 @@ func buildPlayCommand(goos, format, path string) (*exec.Cmd, error) {
 			return exec.Command("powershell", "-NoProfile", "-Command",
 				fmt.Sprintf("(New-Object Media.SoundPlayer '%s').PlaySync()", path)), nil
 		}
-		// MediaPlayer (WPF) handles MP3, which SoundPlayer cannot.
+		// MediaPlayer (WPF) handles MP3, which SoundPlayer cannot. The wait for
+		// NaturalDuration is BOUNDED (max ~3s) so an unloadable/invalid file can
+		// never hang playback — without the bound, a file that never reports a
+		// duration would spin forever.
 		ps := fmt.Sprintf(
 			"Add-Type -AssemblyName PresentationCore; "+
 				"$p = New-Object System.Windows.Media.MediaPlayer; "+
 				"$p.Open([uri]'%s'); $p.Play(); "+
-				"Start-Sleep -Milliseconds 300; "+
-				"while ($p.NaturalDuration.HasTimeSpan -eq $false) { Start-Sleep -Milliseconds 50 }; "+
-				"Start-Sleep -Seconds ([int]([math]::Ceiling($p.NaturalDuration.TimeSpan.TotalSeconds)) + 1)",
+				"$n = 0; while (-not $p.NaturalDuration.HasTimeSpan -and $n -lt 60) { Start-Sleep -Milliseconds 50; $n++ }; "+
+				"if ($p.NaturalDuration.HasTimeSpan) { Start-Sleep -Seconds ([int][math]::Ceiling($p.NaturalDuration.TimeSpan.TotalSeconds) + 1) } else { Start-Sleep -Milliseconds 200 }; "+
+				"$p.Close()",
 			path)
 		return exec.Command("powershell", "-NoProfile", "-Command", ps), nil
 	default:
@@ -1435,7 +1438,7 @@ func (p *Player) IsPlaying() bool {
 
 - [ ] **Step 4: Fix existing player tests for the new signature**
 
-The old tests call `player.Play(data)` (one arg). Update every call in `internal/audio/player_test.go` to `player.Play(data, "mp3")`. Run:
+The old tests call `player.Play(data)` (one arg). Update every call in `internal/audio/player_test.go` to the two-arg form, but pass format **`"wav"`** (NOT `"mp3"`): `player.Play(data, "wav")`. Reason: these tests pass fake bytes that are not valid audio. On Windows, `"wav"` routes to `SoundPlayer`, which **fails fast** on invalid data; `"mp3"` routes to the WPF `MediaPlayer`, which is much slower for unloadable input (it waits up to ~3s for a duration). Using `"wav"` keeps the suite fast and avoids any chance of a hang. The real format-selection coverage is the `buildPlayCommand`/`extForFormat` table test from Step 1 (which does not run playback). Do NOT add new real-playback MP3 tests.
 
 Run: `go test ./internal/audio/ -v`
 Expected: PASS (new + updated existing tests).
