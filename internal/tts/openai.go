@@ -2,15 +2,15 @@ package tts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 )
 
-// Voice represents available OpenAI TTS voices
+// Voice represents an OpenAI TTS voice (kept for back-compat helpers).
 type Voice string
 
 const (
@@ -22,82 +22,96 @@ const (
 	VoiceShimmer Voice = "shimmer"
 )
 
-// ValidVoices returns all valid voice options
+func openAIVoices() []string {
+	return []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+}
+
+// ValidVoices returns the OpenAI voices (back-compat helper).
 func ValidVoices() []Voice {
 	return []Voice{VoiceAlloy, VoiceEcho, VoiceFable, VoiceOnyx, VoiceNova, VoiceShimmer}
 }
 
-// IsValidVoice checks if the given voice is valid
+// IsValidVoice reports whether v is a known OpenAI voice (back-compat helper).
 func IsValidVoice(v string) bool {
-	for _, valid := range ValidVoices() {
-		if string(valid) == v {
+	for _, valid := range openAIVoices() {
+		if valid == v {
 			return true
 		}
 	}
 	return false
 }
 
-// Client handles OpenAI TTS API requests
-type Client struct {
+// OpenAIProvider synthesizes speech via the OpenAI TTS API.
+type OpenAIProvider struct {
 	apiKey     string
-	httpClient *http.Client
 	model      string
+	baseURL    string
+	httpClient *http.Client
 }
 
-// NewClient creates a new TTS client
-func NewClient() *Client {
-	return &Client{
-		apiKey: os.Getenv("OPENAI_API_KEY"),
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		model: "tts-1",
+// NewOpenAIProvider creates a provider. model "" defaults to "tts-1".
+func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
+	if model == "" {
+		model = "tts-1"
+	}
+	return &OpenAIProvider{
+		apiKey:     apiKey,
+		model:      model,
+		baseURL:    "https://api.openai.com",
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
-// ttsRequest represents the API request payload
-type ttsRequest struct {
-	Model string `json:"model"`
-	Input string `json:"input"`
-	Voice string `json:"voice"`
+func (p *OpenAIProvider) Name() string          { return "openai" }
+func (p *OpenAIProvider) Voices() []string      { return openAIVoices() }
+func (p *OpenAIProvider) DefaultFormat() string { return "mp3" }
+
+type openAIRequest struct {
+	Model string  `json:"model"`
+	Input string  `json:"input"`
+	Voice string  `json:"voice"`
+	Speed float64 `json:"speed,omitempty"`
 }
 
-// Synthesize converts text to speech and returns MP3 audio data
-func (c *Client) Synthesize(text string, voice Voice) ([]byte, error) {
-	reqBody := ttsRequest{
-		Model: c.model,
-		Input: text,
-		Voice: string(voice),
+// Synthesize converts text to MP3 audio.
+func (p *OpenAIProvider) Synthesize(ctx context.Context, req Request) (Audio, error) {
+	if p.apiKey == "" {
+		return Audio{}, fmt.Errorf("openai: OPENAI_API_KEY is not set")
 	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	model := p.model
+	if req.Model != "" {
+		model = req.Model
 	}
-
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/speech", bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	body := openAIRequest{
+		Model: model,
+		Input: req.Text,
+		Voice: req.Voice,
+		Speed: ClampSpeed(req.Speed, 0.25, 4.0),
 	}
-
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
+	data, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
+		return Audio{}, fmt.Errorf("openai: marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/audio/speech", bytes.NewReader(data))
+	if err != nil {
+		return Audio{}, fmt.Errorf("openai: create request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return Audio{}, fmt.Errorf("openai: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return Audio{}, fmt.Errorf("openai: API error (status %d): %s", resp.StatusCode, string(errBody))
 	}
-
-	audioData, err := io.ReadAll(resp.Body)
+	audio, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return Audio{}, fmt.Errorf("openai: read response: %w", err)
 	}
-
-	return audioData, nil
+	return Audio{Data: audio, Format: "mp3"}, nil
 }
