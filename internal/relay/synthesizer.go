@@ -1,9 +1,8 @@
 package relay
 
-import "github.com/ybouhjira/claude-code-tts/internal/tts"
+import "context"
 
-// Synthesizer is the contract the handler needs to convert text to MP3 bytes.
-// tts.Client satisfies this interface; tests inject a mock.
+// Synthesizer converts text to MP3 bytes for the relay/companion path.
 type Synthesizer interface {
-	Synthesize(text string, voice tts.Voice) ([]byte, error)
+	Synthesize(ctx context.Context, text string) ([]byte, error)
 }

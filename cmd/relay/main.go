@@ -14,7 +14,7 @@ import (
 
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/relay"
-	"github.com/ybouhjira/claude-code-tts/internal/tts"
+	"github.com/ybouhjira/claude-code-tts/internal/ttsconfig"
 )
 
 func main() {
@@ -27,9 +27,8 @@ func main() {
 	logging.Info("PID: %d", os.Getpid())
 	logging.Info("========================================")
 
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		logging.Fatal("OPENAI_API_KEY environment variable is required")
-	}
+	// API keys are validated per-provider at resolve time (see internal/ttsconfig).
+	// Do not hard-require OPENAI_API_KEY here — a Grok-only relay needs no OpenAI key.
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -65,7 +64,16 @@ func main() {
 	// Shared store and hub — both ingest and companion operate on the same data.
 	store := relay.NewClipStore(10)
 	hub := relay.NewSSEHub()
-	synth := tts.NewClient()
+
+	reg := ttsconfig.LoadOrDefault()
+	provider, baseReq, err := reg.Default()
+	if err != nil {
+		logging.Fatal("failed to resolve TTS profile: %v", err)
+	}
+	synth, err := relay.NewProviderSynthesizer(provider, baseReq)
+	if err != nil {
+		logging.Fatal("%v", err) // WAV provider configured for relay -> fail fast
+	}
 
 	ingestSrv, err := relay.NewServer(ingestAddr, synth, store, hub)
 	if err != nil {

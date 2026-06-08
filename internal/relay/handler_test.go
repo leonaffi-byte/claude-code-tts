@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,7 +24,7 @@ type mockSynthesizer struct {
 	calledWith string
 }
 
-func (m *mockSynthesizer) Synthesize(text string, voice tts.Voice) ([]byte, error) {
+func (m *mockSynthesizer) Synthesize(_ context.Context, text string) ([]byte, error) {
 	m.called = true
 	m.calledWith = text
 	return m.audioData, m.err

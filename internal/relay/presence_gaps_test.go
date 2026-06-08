@@ -15,13 +15,12 @@ package relay
 // ---------------------------------------------------------------------------
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
-
-	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
 
 // ---------------------------------------------------------------------------
@@ -36,7 +35,7 @@ type concurrentSafeSynth struct {
 	data []byte
 }
 
-func (s *concurrentSafeSynth) Synthesize(_ string, _ tts.Voice) ([]byte, error) {
+func (s *concurrentSafeSynth) Synthesize(_ context.Context, _ string) ([]byte, error) {
 	return s.data, nil
 }
 

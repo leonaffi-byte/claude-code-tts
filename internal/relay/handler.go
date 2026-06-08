@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
-	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
 
 // Handler wires an HTTP mux for the relay endpoints.
@@ -16,12 +15,12 @@ import (
 type Handler struct {
 	synth           Synthesizer
 	store           *ClipStore
-	hub             *SSEHub          // nil-safe; broadcast is skipped when nil
-	ts              *TokenStore      // nil-safe; rotation disabled when nil
+	hub             *SSEHub     // nil-safe; broadcast is skipped when nil
+	ts              *TokenStore // nil-safe; rotation disabled when nil
 	qrPrinter       func(string) error
-	pushSender      PushSenderIface  // nil-safe; push is skipped when nil
-	clipBaseURL     string           // base URL prepended to clip IDs in push payloads
-	presenceTracker PresenceTracker  // nil-safe; when nil, push is never suppressed
+	pushSender      PushSenderIface // nil-safe; push is skipped when nil
+	clipBaseURL     string          // base URL prepended to clip IDs in push payloads
+	presenceTracker PresenceTracker // nil-safe; when nil, push is never suppressed
 }
 
 // NewHandler creates an HTTP handler backed by the given Synthesizer, store, and hub.
@@ -106,7 +105,7 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	audioBytes, err := h.synth.Synthesize(req.Text, tts.VoiceAlloy)
+	audioBytes, err := h.synth.Synthesize(r.Context(), req.Text)
 	if err != nil {
 		logging.Error("synthesis failed: %v", err)
 		http.Error(w, "synthesis failed", http.StatusInternalServerError)
