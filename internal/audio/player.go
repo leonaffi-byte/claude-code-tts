@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -48,10 +49,13 @@ func buildPlayCommand(goos, format, path string) (*exec.Cmd, error) {
 		}
 		return nil, fmt.Errorf("no suitable audio player found on Linux (install mpv, ffplay, mpg123, or aplay)")
 	case "windows":
+		// Escape single quotes for PowerShell single-quoted strings (' -> '')
+		// so a temp path containing an apostrophe (e.g. user "O'Brien") is safe.
+		q := strings.ReplaceAll(path, "'", "''")
 		if format == "wav" {
 			// SoundPlayer plays WAV natively.
 			return exec.Command("powershell", "-NoProfile", "-Command",
-				fmt.Sprintf("(New-Object Media.SoundPlayer '%s').PlaySync()", path)), nil
+				fmt.Sprintf("(New-Object Media.SoundPlayer '%s').PlaySync()", q)), nil
 		}
 		// MediaPlayer (WPF) handles MP3, which SoundPlayer cannot. The wait for
 		// NaturalDuration is BOUNDED (max ~3s) so an unloadable/invalid file can
@@ -64,7 +68,7 @@ func buildPlayCommand(goos, format, path string) (*exec.Cmd, error) {
 				"$n = 0; while (-not $p.NaturalDuration.HasTimeSpan -and $n -lt 60) { Start-Sleep -Milliseconds 50; $n++ }; "+
 				"if ($p.NaturalDuration.HasTimeSpan) { Start-Sleep -Seconds ([int][math]::Ceiling($p.NaturalDuration.TimeSpan.TotalSeconds) + 1) } else { Start-Sleep -Milliseconds 200 }; "+
 				"$p.Close()",
-			path)
+			q)
 		return exec.Command("powershell", "-NoProfile", "-Command", ps), nil
 	default:
 		return nil, fmt.Errorf("unsupported platform: %s", goos)
