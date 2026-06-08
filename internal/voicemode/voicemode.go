@@ -94,5 +94,9 @@ func (s *Store) Set(m Mode) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("voicemode: write: %w", err)
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("voicemode: rename: %w", err)
+	}
+	return nil
 }
