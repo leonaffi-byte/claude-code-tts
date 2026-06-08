@@ -1,0 +1,117 @@
+package ttsconfig
+
+import "testing"
+
+func testConfig() *Config {
+	return &Config{
+		DefaultProvider: "grok",
+		DefaultProfile:  "default",
+		Providers: map[string]ProviderConfig{
+			"openai": {APIKeyEnv: "OPENAI_API_KEY", Model: "tts-1"},
+			"grok":   {APIKeyEnv: "XAI_API_KEY"},
+			"piper":  {Binary: "piper", ModelDir: "/models"},
+		},
+		Profiles: map[string]Profile{
+			"default": {Provider: "grok", Voice: "eve", Speed: 1.1},
+			"offline": {Provider: "piper", Voice: "en_US-amy-medium"},
+			"bogus":   {Provider: "nope", Voice: "x"},
+		},
+	}
+}
+
+func TestRegistry_Resolve(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	reg, err := NewRegistry(testConfig())
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	prov, req, err := reg.Resolve("default")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if prov.Name() != "grok" || req.Voice != "eve" || req.Speed != 1.1 {
+		t.Errorf("got %s/%+v", prov.Name(), req)
+	}
+}
+
+func TestRegistry_ResolveUnknownProfile(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	reg, _ := NewRegistry(testConfig())
+	if _, _, err := reg.Resolve("missing"); err == nil {
+		t.Fatal("expected error for unknown profile")
+	}
+}
+
+func TestRegistry_ResolveUnknownProviderInProfile(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	reg, _ := NewRegistry(testConfig())
+	if _, _, err := reg.Resolve("bogus"); err == nil {
+		t.Fatal("expected error for profile referencing unknown provider")
+	}
+}
+
+func TestRegistry_ResolveMissingKey(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "") // unset
+	reg, _ := NewRegistry(testConfig())
+	if _, _, err := reg.Resolve("default"); err == nil {
+		t.Fatal("expected error when XAI_API_KEY missing")
+	}
+}
+
+func TestRegistry_ResolveInvalidVoice(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	cfg := testConfig()
+	cfg.Profiles["bad"] = Profile{Provider: "grok", Voice: "not-a-voice"}
+	reg, _ := NewRegistry(cfg)
+	if _, _, err := reg.Resolve("bad"); err == nil {
+		t.Fatal("expected error for invalid grok voice")
+	}
+}
+
+func TestRegistry_DefaultWithEnvOverrides(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	t.Setenv("CLAUDE_TTS_VOICE", "leo")
+	t.Setenv("CLAUDE_TTS_SPEED", "1.4")
+	reg, _ := NewRegistry(testConfig())
+	prov, req, err := reg.Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if prov.Name() != "grok" || req.Voice != "leo" || req.Speed != 1.4 {
+		t.Errorf("override failed: %s/%+v", prov.Name(), req)
+	}
+}
+
+func TestRegistry_ResolveVoice(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	reg, _ := NewRegistry(testConfig())
+
+	prov, req, err := reg.ResolveVoice("grok", "", 1.0) // empty -> first voice (eve)
+	if err != nil {
+		t.Fatalf("ResolveVoice: %v", err)
+	}
+	if prov.Name() != "grok" || req.Voice != "eve" {
+		t.Errorf("got %s/%q, want grok/eve", prov.Name(), req.Voice)
+	}
+	if _, _, err := reg.ResolveVoice("grok", "bogus", 1.0); err == nil {
+		t.Error("expected invalid-voice error")
+	}
+	if _, _, err := reg.ResolveVoice("nope", "x", 1.0); err == nil {
+		t.Error("expected unknown-provider error")
+	}
+}
+
+func TestRegistry_DefaultProviderEnvOverride(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-k")
+	t.Setenv("XAI_API_KEY", "xai-k")
+	t.Setenv("CLAUDE_TTS_PROVIDER", "openai")
+	t.Setenv("CLAUDE_TTS_VOICE", "onyx")
+	reg, _ := NewRegistry(testConfig())
+	prov, req, err := reg.Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if prov.Name() != "openai" || req.Voice != "onyx" {
+		t.Errorf("got %s/%q, want openai/onyx", prov.Name(), req.Voice)
+	}
+}

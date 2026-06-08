@@ -58,9 +58,9 @@ func configPath() string {
 	return filepath.Join(home, ".claude", "plugins", "claude-code-tts", "config.json")
 }
 
-// Load reads the config file, falling back to DefaultConfig when it is absent.
+// loadConfig reads the config file, falling back to DefaultConfig when it is absent.
 // A present-but-malformed file is an error.
-func Load() (*Config, error) {
+func loadConfig() (*Config, error) {
 	path := configPath()
 	data, err := os.ReadFile(path)
 	if err != nil {

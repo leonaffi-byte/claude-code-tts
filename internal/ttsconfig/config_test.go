@@ -8,9 +8,9 @@ import (
 
 func TestLoad_MissingFileReturnsDefault(t *testing.T) {
 	t.Setenv("CLAUDE_TTS_CONFIG", filepath.Join(t.TempDir(), "nope.json"))
-	cfg, err := Load()
+	cfg, err := loadConfig()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("loadConfig: %v", err)
 	}
 	if cfg.DefaultProvider != "openai" {
 		t.Errorf("default provider = %q, want openai", cfg.DefaultProvider)
@@ -29,9 +29,9 @@ func TestLoad_ReadsFile(t *testing.T) {
     }`), 0o600)
 	t.Setenv("CLAUDE_TTS_CONFIG", path)
 
-	cfg, err := Load()
+	cfg, err := loadConfig()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("loadConfig: %v", err)
 	}
 	if cfg.DefaultProvider != "grok" {
 		t.Errorf("provider = %q", cfg.DefaultProvider)
@@ -45,7 +45,7 @@ func TestLoad_MalformedFileErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	_ = os.WriteFile(path, []byte("{not json"), 0o600)
 	t.Setenv("CLAUDE_TTS_CONFIG", path)
-	if _, err := Load(); err == nil {
+	if _, err := loadConfig(); err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
 }
