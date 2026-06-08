@@ -135,6 +135,13 @@ func TestWorkerPool_JobHistoryLimit(t *testing.T) {
 	if got := len(wp.GetStatus().RecentJobs); got > 10 {
 		t.Errorf("recent jobs = %d, want <= 10", got)
 	}
+	// The full job history is capped at 100 regardless of how many were submitted.
+	wp.historyMu.RLock()
+	got := len(wp.jobHistory)
+	wp.historyMu.RUnlock()
+	if got > 100 {
+		t.Errorf("jobHistory = %d, want <= 100", got)
+	}
 }
 
 func TestWorkerPool_StartStop(t *testing.T) {

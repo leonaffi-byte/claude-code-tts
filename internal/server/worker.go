@@ -208,8 +208,12 @@ func (wp *WorkerPool) Submit(sr SpeakRequest) (*Job, error) {
 	case wp.jobs <- job:
 		return job, nil
 	default:
+		// job is already in jobHistory and visible to GetStatus, so mutate its
+		// state under the job lock to avoid racing with a concurrent reader.
+		job.mu.Lock()
 		job.Status = "failed"
 		job.Error = "queue is full"
+		job.mu.Unlock()
 		return job, fmt.Errorf("job queue is full (size: %d)", wp.queueSize)
 	}
 }
