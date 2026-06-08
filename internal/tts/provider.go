@@ -1,4 +1,3 @@
-// internal/tts/provider.go
 package tts
 
 import "context"
@@ -20,16 +19,19 @@ type Audio struct {
 // Provider converts text to speech.
 type Provider interface {
 	Name() string
-	Voices() []string      // known voice ids; empty means "any" (e.g. Piper)
+	// Voices returns the known voice ids. A nil/empty slice means the provider
+	// accepts arbitrary voice strings (e.g. file-based models like Piper).
+	Voices() []string
 	DefaultFormat() string // "mp3" | "wav"
 	Synthesize(ctx context.Context, req Request) (Audio, error)
 }
 
 // ClampSpeed returns speed clamped to [min,max]. A speed of 0 means "use the
-// provider default" and returns 1.0.
+// provider default" (1.0), which is then clamped to [min,max] like any other
+// value, so callers whose range excludes 1.0 still get an in-range result.
 func ClampSpeed(speed, min, max float64) float64 {
 	if speed == 0 {
-		return 1.0
+		speed = 1.0
 	}
 	if speed < min {
 		return min
