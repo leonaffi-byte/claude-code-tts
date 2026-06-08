@@ -49,6 +49,20 @@ func TestGrokProvider_Synthesize(t *testing.T) {
 	}
 }
 
+func TestGrokProvider_Synthesize_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("bad key"))
+	}))
+	defer srv.Close()
+
+	p := NewGrokProvider("xai-test", "en")
+	p.baseURL = srv.URL
+	if _, err := p.Synthesize(context.Background(), Request{Text: "x", Voice: "eve"}); err == nil {
+		t.Fatal("expected error on 401, got nil")
+	}
+}
+
 func TestGrokProvider_Metadata(t *testing.T) {
 	p := NewGrokProvider("k", "")
 	if p.Name() != "grok" || p.DefaultFormat() != "mp3" {
