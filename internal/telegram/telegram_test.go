@@ -8,6 +8,18 @@ import (
 	"testing"
 )
 
+func TestSendAudio_DoesNotLeakToken(t *testing.T) {
+	s := NewSender("SUPER-SECRET-TOKEN", "1")
+	s.baseURL = "http://127.0.0.1:1" // connection refused -> Do returns a *url.Error carrying the URL
+	err := s.SendAudio(context.Background(), []byte("x"), "")
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	if strings.Contains(err.Error(), "SUPER-SECRET-TOKEN") {
+		t.Errorf("error leaks the bot token: %v", err)
+	}
+}
+
 func TestSendAudio(t *testing.T) {
 	var gotPath, gotChat string
 	var gotAudio []byte
