@@ -13,7 +13,8 @@ func (s stubProvider) Name() string          { return "stub" }
 func (s stubProvider) Voices() []string      { return nil }
 func (s stubProvider) DefaultFormat() string { return s.format }
 func (s stubProvider) Synthesize(ctx context.Context, r tts.Request) (tts.Audio, error) {
-	return tts.Audio{Data: []byte("MP3"), Format: s.format}, nil
+	// Echo the text back so tests can verify it was threaded through.
+	return tts.Audio{Data: []byte(r.Text), Format: s.format}, nil
 }
 
 func TestProviderSynthesizer_RejectsWAV(t *testing.T) {
@@ -28,7 +29,7 @@ func TestProviderSynthesizer_MP3(t *testing.T) {
 		t.Fatalf("NewProviderSynthesizer: %v", err)
 	}
 	data, err := s.Synthesize(context.Background(), "hello")
-	if err != nil || string(data) != "MP3" {
-		t.Errorf("got %q err %v", data, err)
+	if err != nil || string(data) != "hello" {
+		t.Errorf("got %q err %v, want text threaded through", data, err)
 	}
 }
