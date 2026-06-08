@@ -25,11 +25,8 @@ func main() {
 	logging.Info("Log file: %s", logging.GetLogPath())
 	logging.Info("========================================")
 
-	// Check for required environment variable
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		logging.Fatal("OPENAI_API_KEY environment variable is required")
-	}
-	logging.Info("OPENAI_API_KEY is set (length: %d)", len(os.Getenv("OPENAI_API_KEY")))
+	// API keys are validated per-provider at resolve time (see internal/ttsconfig).
+	// Do not hard-require OPENAI_API_KEY here — Grok/Piper configs need no OpenAI key.
 
 	// Create and start the MCP server
 	srv, err := server.New()

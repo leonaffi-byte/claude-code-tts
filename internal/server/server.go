@@ -7,8 +7,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/ybouhjira/claude-code-tts/internal/audio"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
-	"github.com/ybouhjira/claude-code-tts/internal/tts"
+	"github.com/ybouhjira/claude-code-tts/internal/ttsconfig"
 )
 
 // Server wraps the MCP server and worker pool
@@ -21,28 +22,15 @@ type Server struct {
 func New() (*Server, error) {
 	logging.Info("Creating TTS MCP server...")
 
-	// Create worker pool (2 workers, queue size 50)
-	wp := NewWorkerPool(2, 50)
+	reg := ttsconfig.LoadOrDefault()
+	player := audio.NewPlayer()
+	wp := NewWorkerPool(reg, player, 2, 50)
 	wp.Start()
 	logging.Info("Worker pool created and started")
 
-	// Create MCP server
-	mcpSrv := server.NewMCPServer(
-		"claude-code-tts",
-		"1.0.0",
-		server.WithToolCapabilities(true),
-	)
-	logging.Info("MCP server instance created")
-
-	s := &Server{
-		mcpServer:  mcpSrv,
-		workerPool: wp,
-	}
-
-	// Register tools
+	mcpSrv := server.NewMCPServer("claude-code-tts", "1.0.0", server.WithToolCapabilities(true))
+	s := &Server{mcpServer: mcpSrv, workerPool: wp}
 	s.registerTools()
-	logging.Info("Tools registered: speak, tts_status, tts_pause, tts_resume, tts_clear")
-
 	return s, nil
 }
 
@@ -51,13 +39,16 @@ func (s *Server) registerTools() {
 	// speak tool - converts text to speech
 	speakTool := mcp.NewTool("speak",
 		mcp.WithDescription("Convert text to speech and play it aloud. Use this to provide audio feedback to the user."),
-		mcp.WithString("text",
-			mcp.Required(),
-			mcp.Description("The text to convert to speech (max 4096 characters)"),
-		),
+		mcp.WithString("text", mcp.Required(),
+			mcp.Description("The text to convert to speech (max 4096 characters)")),
+		mcp.WithString("profile",
+			mcp.Description("Named voice profile from config (e.g. default, error). Defaults to the configured default profile.")),
+		mcp.WithString("provider",
+			mcp.Description("Use an explicit provider (openai, grok, piper) instead of a profile.")),
 		mcp.WithString("voice",
-			mcp.Description("Voice to use: alloy, echo, fable, onyx, nova, shimmer (default: alloy)"),
-		),
+			mcp.Description("Override the profile's voice (provider-specific id, e.g. alloy/onyx for OpenAI or eve/leo for Grok).")),
+		mcp.WithNumber("speed",
+			mcp.Description("Override speech speed (provider-dependent range, e.g. 0.7-1.5).")),
 	)
 
 	s.mcpServer.AddTool(speakTool, s.handleSpeak)
@@ -93,44 +84,40 @@ func (s *Server) registerTools() {
 
 // handleSpeak processes speak tool calls
 func (s *Server) handleSpeak(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	logging.Debug("Received speak tool call")
-
-	// Extract text parameter
 	text, ok := request.Params.Arguments["text"].(string)
 	if !ok || text == "" {
-		logging.Warn("speak: missing or empty text parameter")
 		return mcp.NewToolResultError("text parameter is required"), nil
 	}
-
-	// Validate text length
 	if len(text) > 4096 {
-		logging.Warn("speak: text exceeds max length (%d chars)", len(text))
 		return mcp.NewToolResultError("text exceeds maximum length of 4096 characters"), nil
 	}
 
-	// Extract voice parameter (default to alloy)
-	voice := "alloy"
-	if v, ok := request.Params.Arguments["voice"].(string); ok && v != "" {
-		voice = v
+	str := func(k string) string {
+		if v, ok := request.Params.Arguments[k].(string); ok {
+			return v
+		}
+		return ""
+	}
+	profile, provider, voice := str("profile"), str("provider"), str("voice")
+	var speed float64
+	if v, ok := request.Params.Arguments["speed"].(float64); ok {
+		speed = v
+	}
+	if profile == "" && provider == "" {
+		profile = "default"
 	}
 
-	// Validate voice
-	if !tts.IsValidVoice(voice) {
-		logging.Warn("speak: invalid voice '%s'", voice)
-		return mcp.NewToolResultError(fmt.Sprintf("invalid voice '%s'. Valid voices: alloy, echo, fable, onyx, nova, shimmer", voice)), nil
-	}
-
-	logging.Info("speak: queueing job (voice=%s, text_len=%d, preview='%.50s...')", voice, len(text), text)
-
-	// Submit job to worker pool
-	job, err := s.workerPool.Submit(text, tts.Voice(voice))
+	job, err := s.workerPool.Submit(SpeakRequest{
+		Text: text, Profile: profile, Provider: provider, Voice: voice, Speed: speed,
+	})
 	if err != nil {
-		logging.Error("speak: failed to queue job: %v", err)
 		return mcp.NewToolResultError(fmt.Sprintf("failed to queue TTS job: %v", err)), nil
 	}
-
-	logging.Info("speak: job queued successfully (ID: %s)", job.ID)
-	return mcp.NewToolResultText(fmt.Sprintf("TTS job queued successfully (ID: %s, voice: %s)", job.ID, voice)), nil
+	sel := profile
+	if provider != "" {
+		sel = "provider:" + provider
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("TTS job queued (ID: %s, %s)", job.ID, sel)), nil
 }
 
 // handleStatus processes tts_status tool calls

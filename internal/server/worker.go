@@ -1,21 +1,47 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/ybouhjira/claude-code-tts/internal/audio"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
+
+// audioPlayer is the playback dependency (satisfied by *audio.Player).
+type audioPlayer interface {
+	Play(data []byte, format string) error
+	IsPlaying() bool
+}
+
+// synthResolver resolves profiles/providers to providers + base requests.
+type synthResolver interface {
+	Resolve(profile string) (tts.Provider, tts.Request, error)
+	ResolveVoice(provider, voice string, speed float64) (tts.Provider, tts.Request, error)
+	Default() (tts.Provider, tts.Request, error)
+}
+
+// SpeakRequest is the input to Submit. When Provider is set it takes precedence
+// over Profile; Voice/Speed override the resolved request.
+type SpeakRequest struct {
+	Text     string
+	Profile  string
+	Provider string
+	Voice    string
+	Speed    float64
+}
 
 // Job represents a TTS job in the queue
 type Job struct {
 	ID        string    `json:"id"`
 	Text      string    `json:"text"`
-	Voice     tts.Voice `json:"voice"`
+	Profile   string    `json:"profile"`
+	Provider  string    `json:"provider"`
+	Voice     string    `json:"voice"`
+	Speed     float64   `json:"speed"`
 	CreatedAt time.Time `json:"created_at"`
 	Status    string    `json:"status"` // pending, processing, completed, failed
 	Error     string    `json:"error,omitempty"`
@@ -24,8 +50,8 @@ type Job struct {
 
 // WorkerPool manages TTS job processing
 type WorkerPool struct {
-	ttsClient   *tts.Client
-	audioPlayer *audio.Player
+	resolver    synthResolver
+	player      audioPlayer
 	jobs        chan *Job
 	jobHistory  []*Job
 	historyMu   sync.RWMutex
@@ -38,11 +64,11 @@ type WorkerPool struct {
 	shutdown    chan struct{}
 }
 
-// NewWorkerPool creates a new worker pool
-func NewWorkerPool(workerCount, queueSize int) *WorkerPool {
+// NewWorkerPool creates a pool backed by the given resolver and player.
+func NewWorkerPool(resolver synthResolver, player audioPlayer, workerCount, queueSize int) *WorkerPool {
 	return &WorkerPool{
-		ttsClient:   tts.NewClient(),
-		audioPlayer: audio.NewPlayer(),
+		resolver:    resolver,
+		player:      player,
 		jobs:        make(chan *Job, queueSize),
 		jobHistory:  make([]*Job, 0),
 		workerCount: workerCount,
@@ -103,35 +129,42 @@ func (wp *WorkerPool) worker(id int) {
 // processJob handles a single TTS job
 func (wp *WorkerPool) processJob(job *Job) {
 	startTime := time.Now()
-	logging.Info("Job %s: starting (voice=%s, text_len=%d)", job.ID, job.Voice, len(job.Text))
+	logging.Info("Job %s: starting (profile=%s, voice=%s, text_len=%d)", job.ID, job.Profile, job.Voice, len(job.Text))
 
 	job.mu.Lock()
 	job.Status = "processing"
 	job.mu.Unlock()
 
-	// Synthesize audio
-	logging.Debug("Job %s: calling OpenAI TTS API...", job.ID)
-	audioData, err := wp.ttsClient.Synthesize(job.Text, job.Voice)
+	var provider tts.Provider
+	var req tts.Request
+	var err error
+	if job.Provider != "" {
+		provider, req, err = wp.resolver.ResolveVoice(job.Provider, job.Voice, job.Speed)
+	} else {
+		provider, req, err = wp.resolver.Resolve(job.Profile)
+		if err == nil {
+			if job.Voice != "" {
+				req.Voice = job.Voice
+			}
+			if job.Speed != 0 {
+				req.Speed = job.Speed
+			}
+		}
+	}
 	if err != nil {
-		job.mu.Lock()
-		job.Status = "failed"
-		job.Error = err.Error()
-		job.mu.Unlock()
-		wp.failed.Add(1)
-		logging.Error("Job %s: TTS synthesis failed after %v: %v", job.ID, time.Since(startTime), err)
+		wp.failJob(job, fmt.Errorf("resolve: %w", err), startTime)
 		return
 	}
-	logging.Debug("Job %s: received %d bytes of audio", job.ID, len(audioData))
+	req.Text = job.Text
 
-	// Play audio (mutex protected - only one plays at a time)
-	logging.Debug("Job %s: starting audio playback...", job.ID)
-	if err := wp.audioPlayer.Play(audioData); err != nil {
-		job.mu.Lock()
-		job.Status = "failed"
-		job.Error = err.Error()
-		job.mu.Unlock()
-		wp.failed.Add(1)
-		logging.Error("Job %s: playback failed after %v: %v", job.ID, time.Since(startTime), err)
+	audioOut, err := provider.Synthesize(context.Background(), req)
+	if err != nil {
+		wp.failJob(job, fmt.Errorf("synthesis: %w", err), startTime)
+		return
+	}
+
+	if err := wp.player.Play(audioOut.Data, audioOut.Format); err != nil {
+		wp.failJob(job, fmt.Errorf("playback: %w", err), startTime)
 		return
 	}
 
@@ -139,40 +172,44 @@ func (wp *WorkerPool) processJob(job *Job) {
 	job.Status = "completed"
 	job.mu.Unlock()
 	wp.processed.Add(1)
-	logging.Info("Job %s: completed successfully in %v", job.ID, time.Since(startTime))
+	logging.Info("Job %s: completed in %v", job.ID, time.Since(startTime))
 }
 
-// Submit adds a new job to the queue
-func (wp *WorkerPool) Submit(text string, voice tts.Voice) (*Job, error) {
+func (wp *WorkerPool) failJob(job *Job, err error, start time.Time) {
+	job.mu.Lock()
+	job.Status = "failed"
+	job.Error = err.Error()
+	job.mu.Unlock()
+	wp.failed.Add(1)
+	logging.Error("Job %s: %v (after %v)", job.ID, err, time.Since(start))
+}
+
+// Submit adds a new job to the queue.
+func (wp *WorkerPool) Submit(sr SpeakRequest) (*Job, error) {
 	job := &Job{
 		ID:        fmt.Sprintf("job-%d", time.Now().UnixNano()),
-		Text:      text,
-		Voice:     voice,
+		Text:      sr.Text,
+		Profile:   sr.Profile,
+		Provider:  sr.Provider,
+		Voice:     sr.Voice,
+		Speed:     sr.Speed,
 		CreatedAt: time.Now(),
 		Status:    "pending",
 	}
 
-	logging.Debug("Submit: created job %s", job.ID)
-
-	// Track job history (keep last 100)
 	wp.historyMu.Lock()
 	wp.jobHistory = append(wp.jobHistory, job)
 	if len(wp.jobHistory) > 100 {
 		wp.jobHistory = wp.jobHistory[1:]
 	}
-	historyLen := len(wp.jobHistory)
 	wp.historyMu.Unlock()
-
-	logging.Debug("Submit: job history size = %d", historyLen)
 
 	select {
 	case wp.jobs <- job:
-		logging.Debug("Submit: job %s queued (queue_pending=%d)", job.ID, len(wp.jobs))
 		return job, nil
 	default:
 		job.Status = "failed"
 		job.Error = "queue is full"
-		logging.Warn("Submit: queue full, rejecting job %s", job.ID)
 		return job, fmt.Errorf("job queue is full (size: %d)", wp.queueSize)
 	}
 }
@@ -203,7 +240,10 @@ func (wp *WorkerPool) GetStatus() PoolStatus {
 		jobCopy := &Job{
 			ID:        job.ID,
 			Text:      job.Text,
+			Profile:   job.Profile,
+			Provider:  job.Provider,
 			Voice:     job.Voice,
+			Speed:     job.Speed,
 			CreatedAt: job.CreatedAt,
 			Status:    job.Status,
 			Error:     job.Error,
@@ -219,7 +259,7 @@ func (wp *WorkerPool) GetStatus() PoolStatus {
 		QueuePending:   len(wp.jobs),
 		TotalProcessed: wp.processed.Load(),
 		TotalFailed:    wp.failed.Load(),
-		IsPlaying:      wp.audioPlayer.IsPlaying(),
+		IsPlaying:      wp.player.IsPlaying(),
 		IsPaused:       wp.paused.Load(),
 		RecentJobs:     recentJobs,
 	}
