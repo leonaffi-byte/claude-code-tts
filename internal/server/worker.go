@@ -9,6 +9,7 @@ import (
 
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
+	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
 )
 
 // audioPlayer is the playback dependency (satisfied by *audio.Player).
@@ -22,6 +23,16 @@ type synthResolver interface {
 	Resolve(profile string) (tts.Provider, tts.Request, error)
 	ResolveVoice(provider, voice string, speed float64) (tts.Provider, tts.Request, error)
 	Default() (tts.Provider, tts.Request, error)
+}
+
+// modeReader reads the current voice output mode (satisfied by *voicemode.Store).
+type modeReader interface {
+	Get() voicemode.Mode
+}
+
+// telegramSender delivers audio to Telegram (satisfied by *telegram.Sender).
+type telegramSender interface {
+	SendAudio(ctx context.Context, audio []byte, caption string) error
 }
 
 // SpeakRequest is the input to Submit. When Provider is set it takes precedence
@@ -50,18 +61,21 @@ type Job struct {
 
 // WorkerPool manages TTS job processing
 type WorkerPool struct {
-	resolver    synthResolver
-	player      audioPlayer
-	jobs        chan *Job
-	jobHistory  []*Job
-	historyMu   sync.RWMutex
-	workerCount int
-	queueSize   int
-	processed   atomic.Int64
-	failed      atomic.Int64
-	paused      atomic.Bool
-	wg          sync.WaitGroup
-	shutdown    chan struct{}
+	resolver       synthResolver
+	player         audioPlayer
+	mode           modeReader     // nil -> always Computer
+	telegram       telegramSender // nil -> Telegram unavailable
+	telegramReason string         // why telegram is unavailable (for error messages)
+	jobs           chan *Job
+	jobHistory     []*Job
+	historyMu      sync.RWMutex
+	workerCount    int
+	queueSize      int
+	processed      atomic.Int64
+	failed         atomic.Int64
+	paused         atomic.Bool
+	wg             sync.WaitGroup
+	shutdown       chan struct{}
 }
 
 // NewWorkerPool creates a pool backed by the given resolver and player.
@@ -75,6 +89,17 @@ func NewWorkerPool(resolver synthResolver, player audioPlayer, workerCount, queu
 		queueSize:   queueSize,
 		shutdown:    make(chan struct{}),
 	}
+}
+
+// WithMode sets the voice-mode reader. When unset, the pool behaves as Computer.
+func (wp *WorkerPool) WithMode(m modeReader) *WorkerPool { wp.mode = m; return wp }
+
+// WithTelegram sets the Telegram sender (may be nil). reason explains why it is
+// unavailable when the sender is nil, for user-facing error messages.
+func (wp *WorkerPool) WithTelegram(s telegramSender, reason string) *WorkerPool {
+	wp.telegram = s
+	wp.telegramReason = reason
+	return wp
 }
 
 // Start launches the worker goroutines
@@ -129,11 +154,26 @@ func (wp *WorkerPool) worker(id int) {
 // processJob handles a single TTS job
 func (wp *WorkerPool) processJob(job *Job) {
 	startTime := time.Now()
-	logging.Info("Job %s: starting (profile=%s, voice=%s, text_len=%d)", job.ID, job.Profile, job.Voice, len(job.Text))
+
+	mode := voicemode.Computer
+	if wp.mode != nil {
+		mode = wp.mode.Get()
+	}
+	logging.Info("Job %s: starting (mode=%s, profile=%s, provider=%s, text_len=%d)", job.ID, mode, job.Profile, job.Provider, len(job.Text))
 
 	job.mu.Lock()
 	job.Status = "processing"
 	job.mu.Unlock()
+
+	// Off: no synthesis (no cost), no delivery.
+	if mode == voicemode.Off {
+		job.mu.Lock()
+		job.Status = "completed"
+		job.mu.Unlock()
+		wp.processed.Add(1)
+		logging.Info("Job %s: muted (voice mode off)", job.ID)
+		return
+	}
 
 	var provider tts.Provider
 	var req tts.Request
@@ -144,15 +184,12 @@ func (wp *WorkerPool) processJob(job *Job) {
 	case job.Profile != "":
 		provider, req, err = wp.resolver.Resolve(job.Profile)
 	default:
-		// No explicit profile/provider: honor CLAUDE_TTS_* env overrides plus the
-		// configured default profile.
 		provider, req, err = wp.resolver.Default()
 	}
 	if err != nil {
 		wp.failJob(job, fmt.Errorf("resolve: %w", err), startTime)
 		return
 	}
-	// Explicit tool args take precedence over the resolved request.
 	if job.Voice != "" {
 		req.Voice = job.Voice
 	}
@@ -161,15 +198,39 @@ func (wp *WorkerPool) processJob(job *Job) {
 	}
 	req.Text = job.Text
 
+	// Fail fast on Telegram misconfiguration before paying for synthesis.
+	if mode.SendsTelegram() {
+		if wp.telegram == nil {
+			wp.failJob(job, fmt.Errorf("Telegram not configured: %s", wp.telegramReason), startTime)
+			return
+		}
+		if provider.DefaultFormat() != "mp3" {
+			wp.failJob(job, fmt.Errorf("Telegram requires an MP3 provider (OpenAI or Grok); %q emits %s", provider.Name(), provider.DefaultFormat()), startTime)
+			return
+		}
+	}
+
 	audioOut, err := provider.Synthesize(context.Background(), req)
 	if err != nil {
 		wp.failJob(job, fmt.Errorf("synthesis: %w", err), startTime)
 		return
 	}
 
-	if err := wp.player.Play(audioOut.Data, audioOut.Format); err != nil {
-		wp.failJob(job, fmt.Errorf("playback: %w", err), startTime)
-		return
+	if mode.SendsTelegram() {
+		if sendErr := wp.telegram.SendAudio(context.Background(), audioOut.Data, job.Text); sendErr != nil {
+			if !mode.PlaysLocal() {
+				wp.failJob(job, fmt.Errorf("telegram: %w", sendErr), startTime)
+				return
+			}
+			logging.Error("Job %s: telegram send failed (continuing to local): %v", job.ID, sendErr)
+		}
+	}
+
+	if mode.PlaysLocal() {
+		if err := wp.player.Play(audioOut.Data, audioOut.Format); err != nil {
+			wp.failJob(job, fmt.Errorf("playback: %w", err), startTime)
+			return
+		}
 	}
 
 	job.mu.Lock()
@@ -232,6 +293,9 @@ type PoolStatus struct {
 	IsPlaying      bool   `json:"is_playing"`
 	IsPaused       bool   `json:"is_paused"`
 	RecentJobs     []*Job `json:"recent_jobs,omitempty"`
+
+	VoiceMode          string `json:"voice_mode"`
+	TelegramConfigured bool   `json:"telegram_configured"`
 }
 
 // GetStatus returns the current pool status
@@ -261,6 +325,11 @@ func (wp *WorkerPool) GetStatus() PoolStatus {
 	}
 	wp.historyMu.RUnlock()
 
+	mode := voicemode.Computer
+	if wp.mode != nil {
+		mode = wp.mode.Get()
+	}
+
 	return PoolStatus{
 		WorkerCount:    wp.workerCount,
 		QueueSize:      wp.queueSize,
@@ -270,6 +339,9 @@ func (wp *WorkerPool) GetStatus() PoolStatus {
 		IsPlaying:      wp.player.IsPlaying(),
 		IsPaused:       wp.paused.Load(),
 		RecentJobs:     recentJobs,
+
+		VoiceMode:          string(mode),
+		TelegramConfigured: wp.telegram != nil,
 	}
 }
 

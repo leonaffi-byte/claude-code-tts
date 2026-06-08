@@ -4,20 +4,26 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
+	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
 )
 
 // --- shared test doubles (also used by server_test.go) ---
 
-type fakeProvider struct{ format string }
+type fakeProvider struct {
+	format string
+	calls  atomic.Int32
+}
 
 func (f *fakeProvider) Name() string          { return "fake" }
 func (f *fakeProvider) Voices() []string      { return nil }
 func (f *fakeProvider) DefaultFormat() string { return f.format }
 func (f *fakeProvider) Synthesize(ctx context.Context, req tts.Request) (tts.Audio, error) {
+	f.calls.Add(1)
 	return tts.Audio{Data: []byte("AUDIO"), Format: f.format}, nil
 }
 
@@ -165,4 +171,122 @@ func TestWorkerPool_StartStop(t *testing.T) {
 	wp := NewWorkerPool(okResolver("mp3"), &fakePlayer{}, 2, 10)
 	wp.Start()
 	wp.Stop() // must not panic or deadlock
+}
+
+// --- mode-aware delivery tests ---
+
+type fakeMode struct{ m voicemode.Mode }
+
+func (f fakeMode) Get() voicemode.Mode { return f.m }
+
+type fakeTelegram struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (t *fakeTelegram) SendAudio(ctx context.Context, audio []byte, caption string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls++
+	return t.err
+}
+func (t *fakeTelegram) count() int { t.mu.Lock(); defer t.mu.Unlock(); return t.calls }
+
+func newModedPool(mode voicemode.Mode, format string, tg *fakeTelegram, tgReason string) (*WorkerPool, *fakePlayer, *fakeProvider) {
+	prov := &fakeProvider{format: format}
+	player := &fakePlayer{}
+	wp := NewWorkerPool(fakeResolver{prov: prov}, player, 1, 4).WithMode(fakeMode{m: mode})
+	if tg != nil {
+		wp.WithTelegram(tg, tgReason)
+	} else {
+		// Pass a literal nil so wp.telegram is a truly-nil interface, not a
+		// typed-nil (*fakeTelegram)(nil) that would slip past the nil check.
+		wp.WithTelegram(nil, tgReason)
+	}
+	return wp, player, prov
+}
+
+func TestWorkerPool_Mode_Off_SkipsEverything(t *testing.T) {
+	wp, player, prov := newModedPool(voicemode.Off, "mp3", &fakeTelegram{}, "")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { return wp.GetStatus().TotalProcessed == 1 }, "job completed")
+	if n, _, _ := player.snapshot(); n != 0 {
+		t.Errorf("player called %d times in off mode, want 0", n)
+	}
+	if prov.calls.Load() != 0 {
+		t.Errorf("synth called %d times in off mode, want 0 (no cost)", prov.calls.Load())
+	}
+}
+
+func TestWorkerPool_Mode_Computer_LocalOnly(t *testing.T) {
+	tg := &fakeTelegram{}
+	wp, player, _ := newModedPool(voicemode.Computer, "mp3", tg, "")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 }, "played locally")
+	if tg.count() != 0 {
+		t.Errorf("telegram called in computer mode")
+	}
+}
+
+func TestWorkerPool_Mode_Phone_TelegramOnly(t *testing.T) {
+	tg := &fakeTelegram{}
+	wp, player, _ := newModedPool(voicemode.Phone, "mp3", tg, "")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { return tg.count() == 1 }, "sent to telegram")
+	if n, _, _ := player.snapshot(); n != 0 {
+		t.Errorf("player called in phone mode")
+	}
+}
+
+func TestWorkerPool_Mode_Both(t *testing.T) {
+	tg := &fakeTelegram{}
+	wp, player, _ := newModedPool(voicemode.Both, "mp3", tg, "")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 && tg.count() == 1 }, "played + sent")
+}
+
+func TestWorkerPool_Mode_Both_TelegramErrorStillPlaysLocal(t *testing.T) {
+	tg := &fakeTelegram{err: errors.New("telegram down")}
+	wp, player, _ := newModedPool(voicemode.Both, "mp3", tg, "")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 }, "played locally despite telegram error")
+	if wp.GetStatus().TotalFailed != 0 {
+		t.Errorf("both-mode job should not fail when local playback works")
+	}
+}
+
+func TestWorkerPool_Mode_Phone_TelegramErrorFails(t *testing.T) {
+	tg := &fakeTelegram{err: errors.New("telegram down")}
+	wp, _, _ := newModedPool(voicemode.Phone, "mp3", tg, "")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "phone-only job failed")
+}
+
+func TestWorkerPool_Mode_Phone_NotConfiguredFails(t *testing.T) {
+	wp, _, _ := newModedPool(voicemode.Phone, "mp3", nil, "set $TELEGRAM_BOT_TOKEN")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "failed: telegram not configured")
+}
+
+func TestWorkerPool_Mode_Phone_NonMP3Fails(t *testing.T) {
+	wp, _, _ := newModedPool(voicemode.Phone, "wav", &fakeTelegram{}, "")
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "failed: telegram needs mp3")
 }

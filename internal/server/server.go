@@ -10,12 +10,14 @@ import (
 	"github.com/ybouhjira/claude-code-tts/internal/audio"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/ttsconfig"
+	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
 )
 
 // Server wraps the MCP server and worker pool
 type Server struct {
 	mcpServer  *server.MCPServer
 	workerPool *WorkerPool
+	modeStore  *voicemode.Store
 }
 
 // New creates a new TTS MCP server
@@ -24,12 +26,21 @@ func New() (*Server, error) {
 
 	reg := ttsconfig.LoadOrDefault()
 	player := audio.NewPlayer()
-	wp := NewWorkerPool(reg, player, 2, 50)
+	modeStore := voicemode.DefaultStore()
+	tgSender, tgReason := reg.TelegramSender()
+
+	wp := NewWorkerPool(reg, player, 2, 50).
+		WithMode(modeStore)
+	if tgSender != nil {
+		wp.WithTelegram(tgSender, "")
+	} else {
+		wp.WithTelegram(nil, tgReason)
+	}
 	wp.Start()
 	logging.Info("Worker pool created and started")
 
 	mcpSrv := server.NewMCPServer("claude-code-tts", "1.0.0", server.WithToolCapabilities(true))
-	s := &Server{mcpServer: mcpSrv, workerPool: wp}
+	s := &Server{mcpServer: mcpSrv, workerPool: wp, modeStore: modeStore}
 	s.registerTools()
 	return s, nil
 }
@@ -80,6 +91,14 @@ func (s *Server) registerTools() {
 	)
 
 	s.mcpServer.AddTool(clearTool, s.handleClear)
+
+	// tts_output tool - sets the voice output mode
+	outputTool := mcp.NewTool("tts_output",
+		mcp.WithDescription("Set where Claude's voice goes. Call this when the user asks to turn the voice on/off or change where it plays — e.g. \"turn the voice off\", \"speak out loud\", \"send the voice to my phone\", \"use both\"."),
+		mcp.WithString("mode", mcp.Required(),
+			mcp.Description("One of: off (silent), computer (this PC's speakers), phone (Telegram), both.")),
+	)
+	s.mcpServer.AddTool(outputTool, s.handleSetOutput)
 }
 
 // handleSpeak processes speak tool calls
@@ -136,6 +155,19 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 	logging.Debug("tts_status: processed=%d, failed=%d, pending=%d",
 		status.TotalProcessed, status.TotalFailed, status.QueuePending)
 	return mcp.NewToolResultText(string(jsonData)), nil
+}
+
+// handleSetOutput processes tts_output tool calls
+func (s *Server) handleSetOutput(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	m, _ := request.Params.Arguments["mode"].(string)
+	mode := voicemode.Mode(m)
+	if !voicemode.Valid(mode) {
+		return mcp.NewToolResultError("invalid mode; use one of: off, computer, phone, both"), nil
+	}
+	if err := s.modeStore.Set(mode); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to set voice output: %v", err)), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Voice output set to: %s", mode)), nil
 }
 
 // handlePause processes tts_pause tool calls
