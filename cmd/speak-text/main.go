@@ -40,7 +40,7 @@ func runMode(args []string) {
 
 func runStatus() {
 	fmt.Printf("voice mode: %s\n", voicemode.DefaultStore().Get())
-	if s, reason := ttsconfig.LoadOrDefault().TelegramSender(); s != nil {
+	if _, reason := ttsconfig.LoadOrDefault().TelegramSender(); reason == "" {
 		fmt.Println("telegram: configured")
 	} else {
 		fmt.Printf("telegram: not configured (%s)\n", reason)
