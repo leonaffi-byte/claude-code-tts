@@ -21,15 +21,15 @@ func NewRegistry(cfg *Config) (*Registry, error) {
 	for name, pc := range cfg.Providers {
 		switch name {
 		case "openai":
-			key := os.Getenv(envOr(pc.APIKeyEnv, "OPENAI_API_KEY"))
+			key := os.Getenv(nameOr(pc.APIKeyEnv, "OPENAI_API_KEY"))
 			if key == "" {
-				r.missing[name] = fmt.Sprintf("set $%s", envOr(pc.APIKeyEnv, "OPENAI_API_KEY"))
+				r.missing[name] = fmt.Sprintf("set $%s", nameOr(pc.APIKeyEnv, "OPENAI_API_KEY"))
 			}
 			r.providers[name] = tts.NewOpenAIProvider(key, pc.Model)
 		case "grok":
-			key := os.Getenv(envOr(pc.APIKeyEnv, "XAI_API_KEY"))
+			key := os.Getenv(nameOr(pc.APIKeyEnv, "XAI_API_KEY"))
 			if key == "" {
-				r.missing[name] = fmt.Sprintf("set $%s", envOr(pc.APIKeyEnv, "XAI_API_KEY"))
+				r.missing[name] = fmt.Sprintf("set $%s", nameOr(pc.APIKeyEnv, "XAI_API_KEY"))
 			}
 			r.providers[name] = tts.NewGrokProvider(key, pc.Language)
 		case "piper":
@@ -41,10 +41,8 @@ func NewRegistry(cfg *Config) (*Registry, error) {
 	return r, nil
 }
 
-// Load reads config and builds a registry.
-func Load() (*Registry, error) { return loadRegistry() }
-
-func loadRegistry() (*Registry, error) {
+// Load reads the config file and builds a registry.
+func Load() (*Registry, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
@@ -54,7 +52,7 @@ func loadRegistry() (*Registry, error) {
 
 // LoadOrDefault builds a registry, falling back to the OpenAI default on error.
 func LoadOrDefault() *Registry {
-	reg, err := loadRegistry()
+	reg, err := Load()
 	if err != nil {
 		reg, _ = NewRegistry(DefaultConfig())
 	}
@@ -146,7 +144,9 @@ func (r *Registry) Default() (tts.Provider, tts.Request, error) {
 	return prov, req, nil
 }
 
-func envOr(name, fallback string) string {
+// nameOr returns name when non-empty, otherwise fallback. It returns an
+// env-var *name* (e.g. "OPENAI_API_KEY"); it does not read the environment.
+func nameOr(name, fallback string) string {
 	if name != "" {
 		return name
 	}
