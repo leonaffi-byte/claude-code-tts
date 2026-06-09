@@ -54,6 +54,10 @@ func TestPoller_VoicesCommandSendsDemos(t *testing.T) {
 	if len(bot.voiceDemos) != 2 {
 		t.Errorf("got %d demos, want 2 (alloy, onyx)", len(bot.voiceDemos))
 	}
+	// A clear intro message precedes the demo clips.
+	if len(bot.sentMsgs) < 1 || !strings.Contains(bot.sentMsgs[0], "tap") {
+		t.Errorf("expected an intro message explaining how to pick, got %v", bot.sentMsgs)
+	}
 }
 
 func TestPoller_ModelCommandSendsMenu(t *testing.T) {
@@ -80,6 +84,10 @@ func TestPoller_CallbackSetsVoice(t *testing.T) {
 	}
 	if len(bot.answers) != 1 {
 		t.Errorf("expected an answerCallback")
+	}
+	// A persistent confirmation message naming the new voice is also sent.
+	if len(bot.sentMsgs) != 1 || !strings.Contains(bot.sentMsgs[0], "onyx") {
+		t.Errorf("expected a confirmation message naming onyx, got %v", bot.sentMsgs)
 	}
 }
 

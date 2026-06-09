@@ -388,13 +388,14 @@ Selections made via the bot persist in `~/.claude/plugins/claude-code-tts/voice-
 
 ### Voice message caption
 
-Every voice message sent to Telegram includes a caption with the estimated cost, the active model, and the active voice:
+Every voice message sent to Telegram is captioned with the **session it came from** (so several Claude Code windows can share one chat), plus the estimated cost, active model, and active voice:
 
 ```
+📁 claude-code-tts
 0.02¢ · tts-1 · alloy
 ```
 
-The cost estimate is based on the character count of the synthesized text and the OpenAI pricing table for the active model.
+The session label is your project folder name by default; set `CLAUDE_TTS_SESSION` to give a window a custom name. The cost estimate is based on the character count of the synthesized text and the pricing table for the active model.
 
 ## Troubleshooting
 

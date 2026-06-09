@@ -122,28 +122,35 @@ func (p *Poller) handleCommand(ctx context.Context, text string) {
 	}
 	switch cmd[0] {
 	case "/voices":
-		for _, v := range p.src.Voices() {
+		voices := p.src.Voices()
+		if len(voices) == 0 {
+			p.bot.SendMessage(ctx, "No voices are available for the current provider.", nil)
+			return
+		}
+		p.bot.SendMessage(ctx, "🎙 Here are the voices. Listen to each clip, then tap \"✅ Use …\" under the one you want — it becomes my voice for everything I say next.", nil)
+		for _, v := range voices {
 			audio, _, err := p.src.Demo(ctx, v)
 			if err != nil {
 				logging.Error("botcontrol: demo %q: %v", v, err)
 				continue
 			}
 			kb := [][]telegram.InlineButton{{{Text: "✅ Use " + v, CallbackData: "voice:" + v}}}
-			if err := p.bot.SendVoiceWithButton(ctx, audio, "🔊 "+v, kb); err != nil {
+			if err := p.bot.SendVoiceWithButton(ctx, audio, "🔊 Voice: "+v, kb); err != nil {
 				logging.Error("botcontrol: send demo %q: %v", v, err)
 			}
 		}
 	case "/model":
-		p.bot.SendMessage(ctx, "Pick a model:", modelKeyboard(p.src.Models()))
+		p.bot.SendMessage(ctx, "🎚 Pick a model — tap one (higher quality costs more):", modelKeyboard(p.src.Models()))
 	case "/menu":
 		st := p.settings.Get()
-		p.bot.SendMessage(ctx, fmt.Sprintf("Current voice: %s\nCurrent model: %s",
-			orDefault(st.Voice, "(profile default)"), orDefault(st.Model, "(profile default)")),
+		p.bot.SendMessage(ctx, fmt.Sprintf(
+			"⚙️ Current settings\n• Voice: %s\n• Model: %s\n\nTap a model below to change it, or send /voices to change the voice.",
+			orDefault(st.Voice, "default"), orDefault(st.Model, "default")),
 			modelKeyboard(p.src.Models()))
 	case "/help", "/start":
-		p.bot.SendMessage(ctx, "Commands:\n/voices — hear each voice and tap to use it\n/model — pick a model\n/menu — show current selection", nil)
+		p.bot.SendMessage(ctx, "👋 Hi! I speak Claude's replies aloud here, and you control the voice from your phone.\n\nCommands:\n• /voices — hear every voice, then tap ✅ to use one\n• /model — choose the model (quality vs. cost)\n• /menu — show your current voice & model\n• /help — show this message\n\nEvery voice message I send is labeled with the project it came from and its estimated cost.", nil)
 	default:
-		p.bot.SendMessage(ctx, "Unknown command. Try /voices, /model, /menu, or /help.", nil)
+		p.bot.SendMessage(ctx, "🤔 I didn't recognize that. Try /voices, /model, /menu, or /help.", nil)
 	}
 }
 
@@ -169,16 +176,31 @@ func (p *Poller) handleCallback(ctx context.Context, cq *telegram.CallbackQuery)
 	}
 	if err != nil {
 		logging.Error("botcontrol: save selection: %v", err)
-		p.bot.AnswerCallback(ctx, cq.ID, "couldn't save")
+		p.bot.AnswerCallback(ctx, cq.ID, "⚠️ Couldn't save — please try again")
 		return
 	}
+	// Quick toast on the tapped button, plus a persistent confirmation so it's
+	// obvious the change took effect.
 	p.bot.AnswerCallback(ctx, cq.ID, msg)
+	p.bot.SendMessage(ctx, "✅ "+msg+". I'll use it from now on.", nil)
+}
+
+// modelLabels gives the buttons friendlier text; the callback data stays the
+// bare model name so the handler keeps working.
+var modelLabels = map[string]string{
+	"tts-1":           "tts-1 — standard",
+	"tts-1-hd":        "tts-1-hd — higher quality",
+	"gpt-4o-mini-tts": "gpt-4o-mini-tts — newest",
 }
 
 func modelKeyboard(models []string) [][]telegram.InlineButton {
 	kb := make([][]telegram.InlineButton, 0, len(models))
 	for _, m := range models {
-		kb = append(kb, []telegram.InlineButton{{Text: m, CallbackData: "model:" + m}})
+		label := m
+		if l, ok := modelLabels[m]; ok {
+			label = l
+		}
+		kb = append(kb, []telegram.InlineButton{{Text: label, CallbackData: "model:" + m}})
 	}
 	return kb
 }

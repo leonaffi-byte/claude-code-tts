@@ -1,5 +1,22 @@
 package cost
 
+import "fmt"
+
+// Caption builds the caption shown on a Telegram voice message. When session is
+// non-empty it gets its own first line (so messages from different Claude Code
+// instances are easy to tell apart), followed by the estimated cost, model, and
+// voice — e.g.:
+//
+//	📁 claude-code-tts
+//	0.03¢ · tts-1 · onyx
+func Caption(session, provider, model, voice string, chars int) string {
+	line := fmt.Sprintf("%.2f¢ · %s · %s", CentsFor(provider, model, chars), EffectiveModel(provider, model), voice)
+	if session == "" {
+		return line
+	}
+	return "📁 " + session + "\n" + line
+}
+
 // usdPerMillionChars holds approximate published TTS prices in USD per 1,000,000
 // characters. These are estimates for showing rough spend, not exact billing
 // (gpt-4o-mini-tts is token-priced upstream; the value here approximates it).

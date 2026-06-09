@@ -80,7 +80,13 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │    cost.go: price table for OpenAI TTS models;              │
 │      CentsFor(provider, model, chars) → estimated cost;     │
 │      EffectiveModel(provider, model) → canonical name;      │
-│      ModelsFor(provider) → available model names            │
+│      ModelsFor(provider) → available model names;           │
+│      Caption(session, provider, model, voice, chars) →      │
+│        the Telegram voice-message caption                   │
+│                                                             │
+│  internal/session/                                          │
+│    session.go: Label() → per-session caption tag            │
+│      ($CLAUDE_TTS_SESSION, else cwd base name)              │
 │                                                             │
 │  internal/botcontrol/                                       │
 │    poller.go: Poller — long-polls Telegram getUpdates in    │
@@ -131,6 +137,7 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 | `CLAUDE_TTS_MODEL` | Override model name (e.g. `tts-1-hd`) |
 | `CLAUDE_TTS_STATE` | Path to state JSON for persisted voice mode (default: `~/.claude/plugins/claude-code-tts/state.json`) |
 | `CLAUDE_TTS_SETTINGS` | Path to JSON for the bot-selected voice/model (default: `~/.claude/plugins/claude-code-tts/voice-settings.json`) |
+| `CLAUDE_TTS_SESSION` | Label for this session shown on Telegram captions (default: working-directory base name) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (or use `telegram.bot_token_env` in config to name a different env var) |
 
 ## MCP Tools

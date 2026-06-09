@@ -8,6 +8,7 @@ import (
 
 	"github.com/ybouhjira/claude-code-tts/internal/audio"
 	"github.com/ybouhjira/claude-code-tts/internal/cost"
+	"github.com/ybouhjira/claude-code-tts/internal/session"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 	"github.com/ybouhjira/claude-code-tts/internal/ttsconfig"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
@@ -128,10 +129,7 @@ func runSpeak(args []string) {
 			fmt.Fprintf(os.Stderr, "Error synthesizing speech: %v\n", err)
 			os.Exit(1)
 		}
-		caption := fmt.Sprintf("%.2f¢ · %s · %s",
-			cost.CentsFor(prov.Name(), req.Model, len(text)),
-			cost.EffectiveModel(prov.Name(), req.Model),
-			req.Voice)
+		caption := cost.Caption(session.Label(), prov.Name(), req.Model, req.Voice, len(text))
 		if err := sender.Send(context.Background(), tgOut.Data, tgOut.Format, caption); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending to telegram: %v\n", err)
 			os.Exit(1)

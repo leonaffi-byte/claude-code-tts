@@ -9,6 +9,7 @@ import (
 
 	"github.com/ybouhjira/claude-code-tts/internal/cost"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
+	"github.com/ybouhjira/claude-code-tts/internal/session"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
 )
@@ -247,10 +248,7 @@ func (wp *WorkerPool) processJob(job *Job) {
 			wp.failJob(job, fmt.Errorf("synthesis (telegram): %w", err), startTime)
 			return
 		}
-		caption := fmt.Sprintf("%.2f¢ · %s · %s",
-			cost.CentsFor(provider.Name(), req.Model, len(job.Text)),
-			cost.EffectiveModel(provider.Name(), req.Model),
-			req.Voice)
+		caption := cost.Caption(session.Label(), provider.Name(), req.Model, req.Voice, len(job.Text))
 		if sendErr := wp.telegram.Send(context.Background(), tgAudio.Data, tgAudio.Format, caption); sendErr != nil {
 			if !mode.PlaysLocal() {
 				wp.failJob(job, fmt.Errorf("telegram: %w", sendErr), startTime)

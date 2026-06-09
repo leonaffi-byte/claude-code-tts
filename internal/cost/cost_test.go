@@ -2,8 +2,31 @@ package cost
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
+
+func TestCaption(t *testing.T) {
+	// With a session: two lines, session first, then cost·model·voice.
+	c := Caption("claude-code-tts", "openai", "tts-1", "onyx", 1000)
+	if !strings.HasPrefix(c, "📁 claude-code-tts\n") {
+		t.Errorf("caption should start with the session line, got %q", c)
+	}
+	for _, want := range []string{"1.50¢", "tts-1", "onyx"} {
+		if !strings.Contains(c, want) {
+			t.Errorf("caption %q missing %q", c, want)
+		}
+	}
+	// Empty model resolves to the provider default in the caption text.
+	if !strings.Contains(Caption("p", "openai", "", "alloy", 1000), "tts-1") {
+		t.Errorf("empty model should render as tts-1")
+	}
+	// No session: single line, no folder marker.
+	c2 := Caption("", "openai", "tts-1", "onyx", 1000)
+	if strings.Contains(c2, "\n") || strings.Contains(c2, "📁") {
+		t.Errorf("no-session caption should be one plain line, got %q", c2)
+	}
+}
 
 func TestCentsFor(t *testing.T) {
 	// tts-1 = $15 / 1M chars; 1000 chars -> $0.015 -> 1.5 cents.
