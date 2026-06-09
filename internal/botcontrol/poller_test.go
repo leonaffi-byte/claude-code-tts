@@ -90,6 +90,23 @@ func TestPoller_ButtonLabelTriggersVoices(t *testing.T) {
 	}
 }
 
+func TestPoller_PricesListsBothProviders(t *testing.T) {
+	bot := &fakeBot{}
+	p, _ := newTestPoller(t, bot)
+	p.handleUpdate(context.Background(), telegram.Update{
+		Message: &telegram.Message{Text: btnPrices, Chat: telegram.Chat{ID: 42}},
+	})
+	if len(bot.sentMsgs) != 1 {
+		t.Fatalf("got %d messages, want 1 price list", len(bot.sentMsgs))
+	}
+	msg := bot.sentMsgs[0]
+	for _, want := range []string{"OpenAI", "Grok", "tts-1", "$15.00", "$5.00"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("price list missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 func TestPoller_StartShowsButtonMenu(t *testing.T) {
 	bot := &fakeBot{}
 	p, _ := newTestPoller(t, bot)

@@ -28,6 +28,21 @@ func TestCaption(t *testing.T) {
 	}
 }
 
+func TestAllPrices(t *testing.T) {
+	prices := AllPrices()
+	// openai (3 models) + grok (1) = 4 lines, openai first.
+	if len(prices) != 4 {
+		t.Fatalf("got %d price lines, want 4", len(prices))
+	}
+	if prices[0].Provider != "openai" || prices[0].Model != "tts-1" || prices[0].USDPerMillion != 15.0 {
+		t.Errorf("first line = %+v, want openai/tts-1/15", prices[0])
+	}
+	last := prices[len(prices)-1]
+	if last.Provider != "grok" || last.USDPerMillion != 5.0 {
+		t.Errorf("last line = %+v, want grok/5", last)
+	}
+}
+
 func TestCentsFor(t *testing.T) {
 	// tts-1 = $15 / 1M chars; 1000 chars -> $0.015 -> 1.5 cents.
 	if got := CentsFor("openai", "tts-1", 1000); math.Abs(got-1.5) > 1e-9 {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ybouhjira/claude-code-tts/internal/cost"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/telegram"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
@@ -25,12 +26,13 @@ type botSender interface {
 const (
 	btnVoices = "🎙 Voices"
 	btnModel  = "🎚 Model"
+	btnPrices = "💲 Prices"
 	btnMenu   = "⚙️ Menu"
 	btnHelp   = "❓ Help"
 )
 
 func mainMenuRows() [][]string {
-	return [][]string{{btnVoices, btnModel}, {btnMenu, btnHelp}}
+	return [][]string{{btnVoices, btnModel}, {btnPrices, btnMenu}, {btnHelp}}
 }
 
 // settingsWriter persists the user's selection (satisfied by *voicemode.SettingsStore).
@@ -146,6 +148,8 @@ func (p *Poller) handleCommand(ctx context.Context, text string) {
 			"⚙️ Current settings\n• Voice: %s\n• Model: %s\n\nTap 🎙 Voices to change the voice, or a model below to change the model.",
 			orDefault(st.Voice, "default"), orDefault(st.Model, "default")),
 			modelKeyboard(p.src.Models()))
+	case t == btnPrices || first == "/prices":
+		p.bot.SendMessage(ctx, pricesMessage(), nil)
 	case t == btnHelp || first == "/help" || first == "/start":
 		p.sendWelcome(ctx)
 	default:
@@ -160,6 +164,7 @@ func (p *Poller) sendWelcome(ctx context.Context) {
 		"👋 Hi! I speak Claude's replies aloud here. Use the buttons below — no typing needed:\n\n"+
 			"• 🎙 Voices — hear each voice, then tap ✅ to use one\n"+
 			"• 🎚 Model — choose quality vs. cost\n"+
+			"• 💲 Prices — every model's price on both providers\n"+
 			"• ⚙️ Menu — show your current voice & model\n\n"+
 			"Every voice message is labeled with the project it came from and its estimated cost.",
 		mainMenuRows())
@@ -242,4 +247,35 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// providerTitle is the display name for a provider id.
+func providerTitle(p string) string {
+	switch p {
+	case "openai":
+		return "OpenAI"
+	case "grok":
+		return "Grok (xAI)"
+	}
+	return p
+}
+
+// pricesMessage lists every model on both providers with its price.
+func pricesMessage() string {
+	var b strings.Builder
+	b.WriteString("💲 TTS model prices — USD per 1,000,000 characters (estimates):\n")
+	last := ""
+	for _, pl := range cost.AllPrices() {
+		if pl.Provider != last {
+			b.WriteString("\n" + providerTitle(pl.Provider) + "\n")
+			last = pl.Provider
+		}
+		label := pl.Model
+		if l, ok := modelLabels[pl.Model]; ok {
+			label = l
+		}
+		b.WriteString(fmt.Sprintf("• %s — $%.2f\n", label, pl.USDPerMillion))
+	}
+	b.WriteString("\nRule of thumb: a 200-character reply ≈ $0.003 on tts-1 (~0.3¢).")
+	return b.String()
 }

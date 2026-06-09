@@ -33,6 +33,28 @@ var defaultModel = map[string]string{
 	"piper":  "piper",
 }
 
+// ProviderOrder is the stable display order of providers in price listings.
+var ProviderOrder = []string{"openai", "grok"}
+
+// PriceLine is one model's published price for display.
+type PriceLine struct {
+	Provider      string
+	Model         string
+	USDPerMillion float64 // USD per 1,000,000 characters
+}
+
+// AllPrices returns every known provider/model price, in a stable order
+// (providers per ProviderOrder, models per ModelsFor).
+func AllPrices() []PriceLine {
+	var out []PriceLine
+	for _, p := range ProviderOrder {
+		for _, m := range ModelsFor(p) {
+			out = append(out, PriceLine{Provider: p, Model: m, USDPerMillion: usdPerMillionChars[p][m]})
+		}
+	}
+	return out
+}
+
 // EffectiveModel returns model, or the provider's default when model is empty.
 func EffectiveModel(provider, model string) string {
 	if model != "" {
