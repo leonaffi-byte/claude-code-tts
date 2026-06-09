@@ -184,16 +184,30 @@ func (p *Poller) sendVoices(ctx context.Context) {
 		return
 	}
 	p.bot.SendMessage(ctx, "🎙 Listen to each clip, then tap \"✅ Use …\" under the one you want — it becomes my voice for everything I say next.", nil)
+	sent := 0
+	var lastErr error
 	for _, v := range voices {
 		audio, format, err := p.src.Demo(ctx, v)
 		if err != nil {
+			lastErr = err
 			logging.Error("botcontrol: demo %q: %v", v, err)
 			continue
 		}
 		kb := [][]telegram.InlineButton{{{Text: "✅ Use " + v, CallbackData: "voice:" + v}}}
 		if err := p.bot.SendClipWithButton(ctx, audio, format, "🔊 Voice: "+v, kb); err != nil {
+			lastErr = err
 			logging.Error("botcontrol: send demo %q: %v", v, err)
+			continue
 		}
+		sent++
+	}
+	// Don't fail silently — if every voice errored, tell the user why.
+	if sent == 0 && lastErr != nil {
+		msg := lastErr.Error()
+		if len(msg) > 350 {
+			msg = msg[:350] + "…"
+		}
+		p.bot.SendMessage(ctx, "⚠️ Couldn't load voices for "+providerTitle(p.src.Provider())+":\n"+msg, nil)
 	}
 }
 

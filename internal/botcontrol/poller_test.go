@@ -2,6 +2,7 @@ package botcontrol
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -105,6 +106,30 @@ func TestPoller_PricesListsBothProviders(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("price list missing %q:\n%s", want, msg)
 		}
+	}
+}
+
+type failSource struct{}
+
+func (failSource) Provider() string { return "grok" }
+func (failSource) Voices() []string { return []string{"eve"} }
+func (failSource) Models() []string { return []string{"grok"} }
+func (failSource) Demo(ctx context.Context, v string) ([]byte, string, error) {
+	return nil, "", errors.New("grok: API error (status 403): no credits")
+}
+
+func TestPoller_VoicesReportsProviderError(t *testing.T) {
+	bot := &fakeBot{}
+	ss := voicemode.NewSettingsStore(t.TempDir() + "/vs.json")
+	p := NewPoller(bot, ss, failSource{}, 42)
+	p.handleUpdate(context.Background(), telegram.Update{
+		Message: &telegram.Message{Text: btnVoices, Chat: telegram.Chat{ID: 42}},
+	})
+	if len(bot.voiceDemos) != 0 {
+		t.Errorf("no demos should send when synthesis fails, got %d", len(bot.voiceDemos))
+	}
+	if len(bot.sentMsgs) == 0 || !strings.Contains(bot.sentMsgs[len(bot.sentMsgs)-1], "Couldn't load voices") {
+		t.Errorf("expected a provider-error message, got %v", bot.sentMsgs)
 	}
 }
 
