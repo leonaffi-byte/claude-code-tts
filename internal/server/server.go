@@ -237,6 +237,9 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown() {
 	logging.Info("Server shutdown initiated...")
 	if s.pollerStop != nil {
+		// Fire-and-forget: cancelling the context aborts the in-flight long-poll
+		// (NewRequestWithContext); we don't join the goroutine since the process
+		// exits right after Shutdown returns.
 		s.pollerStop()
 	}
 	s.workerPool.Stop()

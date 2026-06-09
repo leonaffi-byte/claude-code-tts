@@ -384,7 +384,7 @@ Once Telegram is configured and Claude Code is open, you can control the voice d
 | `/menu` | Displays the currently selected voice and model with the model picker. |
 | `/help` | Lists the available commands. (Also triggered by `/start`.) |
 
-Selections made via the bot persist in `~/.claude/plugins/claude-code-tts/voice-settings.json` and take effect for every subsequent `speak` call without restarting the server.
+Selections made via the bot persist in `~/.claude/plugins/claude-code-tts/voice-settings.json` (override the path with `CLAUDE_TTS_SETTINGS`) and take effect for every subsequent `speak` call without restarting the server.
 
 ### Voice message caption
 

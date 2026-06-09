@@ -130,6 +130,7 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 | `CLAUDE_TTS_SPEED` | Override speech speed (float) |
 | `CLAUDE_TTS_MODEL` | Override model name (e.g. `tts-1-hd`) |
 | `CLAUDE_TTS_STATE` | Path to state JSON for persisted voice mode (default: `~/.claude/plugins/claude-code-tts/state.json`) |
+| `CLAUDE_TTS_SETTINGS` | Path to JSON for the bot-selected voice/model (default: `~/.claude/plugins/claude-code-tts/voice-settings.json`) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (or use `telegram.bot_token_env` in config to name a different env var) |
 
 ## MCP Tools
