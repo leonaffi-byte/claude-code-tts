@@ -356,6 +356,7 @@ func (wp *WorkerPool) GetStatus() PoolStatus {
 			Profile:   job.Profile,
 			Provider:  job.Provider,
 			Voice:     job.Voice,
+			Model:     job.Model,
 			Speed:     job.Speed,
 			CreatedAt: job.CreatedAt,
 			Status:    job.Status,
