@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/ybouhjira/claude-code-tts/internal/audio"
+	"github.com/ybouhjira/claude-code-tts/internal/cost"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 	"github.com/ybouhjira/claude-code-tts/internal/ttsconfig"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
@@ -101,6 +102,14 @@ func runSpeak(args []string) {
 	}
 	req.Text = text
 
+	st := voicemode.DefaultSettingsStore().Get()
+	if st.Voice != "" && *voice == "" {
+		req.Voice = st.Voice
+	}
+	if st.Model != "" {
+		req.Model = st.Model
+	}
+
 	if dest.SendsTelegram() && prov.DefaultFormat() != "mp3" {
 		fmt.Fprintf(os.Stderr, "Error: telegram needs an MP3 provider (OpenAI or Grok), but %q emits %s\n", prov.Name(), prov.DefaultFormat())
 		os.Exit(1)
@@ -119,7 +128,11 @@ func runSpeak(args []string) {
 			fmt.Fprintf(os.Stderr, "Error synthesizing speech: %v\n", err)
 			os.Exit(1)
 		}
-		if err := sender.Send(context.Background(), tgOut.Data, tgOut.Format, text); err != nil {
+		caption := fmt.Sprintf("%.2f¢ · %s · %s",
+			cost.CentsFor(prov.Name(), req.Model, len(text)),
+			cost.EffectiveModel(prov.Name(), req.Model),
+			req.Voice)
+		if err := sender.Send(context.Background(), tgOut.Data, tgOut.Format, caption); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending to telegram: %v\n", err)
 			os.Exit(1)
 		}
