@@ -18,7 +18,19 @@ func TestCentsFor(t *testing.T) {
 	if got := CentsFor("openai", "", 1000); math.Abs(got-1.5) > 1e-9 {
 		t.Errorf("openai default 1000 chars = %v cents, want 1.5", got)
 	}
-	// Unknown provider/model -> 0.
+	// gpt-4o-mini-tts = $12 / 1M chars; 1000 chars -> 1.2 cents.
+	if got := CentsFor("openai", "gpt-4o-mini-tts", 1000); math.Abs(got-1.2) > 1e-9 {
+		t.Errorf("gpt-4o-mini-tts 1000 chars = %v cents, want 1.2", got)
+	}
+	// grok = $5 / 1M chars; 1000 chars -> 0.5 cents.
+	if got := CentsFor("grok", "grok", 1000); math.Abs(got-0.5) > 1e-9 {
+		t.Errorf("grok 1000 chars = %v cents, want 0.5", got)
+	}
+	// Unknown model under a KNOWN provider -> 0 (second !ok branch).
+	if got := CentsFor("openai", "bad-model", 1000); got != 0 {
+		t.Errorf("unknown model = %v, want 0", got)
+	}
+	// Unknown provider -> 0.
 	if got := CentsFor("nope", "x", 1000); got != 0 {
 		t.Errorf("unknown = %v, want 0", got)
 	}
