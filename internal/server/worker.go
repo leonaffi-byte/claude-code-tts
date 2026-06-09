@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ybouhjira/claude-code-tts/internal/cost"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
@@ -36,6 +37,12 @@ type telegramSender interface {
 	Send(ctx context.Context, audio []byte, format, caption string) error
 }
 
+// settingsReader reads the persisted voice/model selection (satisfied by
+// *voicemode.SettingsStore).
+type settingsReader interface {
+	Get() voicemode.Settings
+}
+
 // SpeakRequest is the input to Submit. When Provider is set it takes precedence
 // over Profile; Voice/Speed override the resolved request.
 type SpeakRequest struct {
@@ -43,6 +50,7 @@ type SpeakRequest struct {
 	Profile  string
 	Provider string
 	Voice    string
+	Model    string
 	Speed    float64
 }
 
@@ -53,6 +61,7 @@ type Job struct {
 	Profile   string    `json:"profile"`
 	Provider  string    `json:"provider"`
 	Voice     string    `json:"voice"`
+	Model     string    `json:"model,omitempty"`
 	Speed     float64   `json:"speed"`
 	CreatedAt time.Time `json:"created_at"`
 	Status    string    `json:"status"` // pending, processing, completed, failed
@@ -67,6 +76,7 @@ type WorkerPool struct {
 	mode           modeReader     // nil -> always Computer
 	telegram       telegramSender // nil -> Telegram unavailable
 	telegramReason string         // why telegram is unavailable (for error messages)
+	settings       settingsReader // nil -> no override
 	jobs           chan *Job
 	jobHistory     []*Job
 	historyMu      sync.RWMutex
@@ -102,6 +112,9 @@ func (wp *WorkerPool) WithTelegram(s telegramSender, reason string) *WorkerPool 
 	wp.telegramReason = reason
 	return wp
 }
+
+// WithSettings sets the persisted voice/model selection source (nil-safe).
+func (wp *WorkerPool) WithSettings(s settingsReader) *WorkerPool { wp.settings = s; return wp }
 
 // Start launches the worker goroutines
 func (wp *WorkerPool) Start() {
@@ -194,8 +207,20 @@ func (wp *WorkerPool) processJob(job *Job) {
 	if job.Voice != "" {
 		req.Voice = job.Voice
 	}
+	if job.Model != "" {
+		req.Model = job.Model
+	}
 	if job.Speed != 0 {
 		req.Speed = job.Speed
+	}
+	if wp.settings != nil {
+		st := wp.settings.Get()
+		if st.Voice != "" && job.Voice == "" {
+			req.Voice = st.Voice
+		}
+		if st.Model != "" && job.Model == "" {
+			req.Model = st.Model
+		}
 	}
 	req.Text = job.Text
 
@@ -222,7 +247,11 @@ func (wp *WorkerPool) processJob(job *Job) {
 			wp.failJob(job, fmt.Errorf("synthesis (telegram): %w", err), startTime)
 			return
 		}
-		if sendErr := wp.telegram.Send(context.Background(), tgAudio.Data, tgAudio.Format, job.Text); sendErr != nil {
+		caption := fmt.Sprintf("%.2f¢ · %s · %s",
+			cost.CentsFor(provider.Name(), req.Model, len(job.Text)),
+			cost.EffectiveModel(provider.Name(), req.Model),
+			req.Voice)
+		if sendErr := wp.telegram.Send(context.Background(), tgAudio.Data, tgAudio.Format, caption); sendErr != nil {
 			if !mode.PlaysLocal() {
 				wp.failJob(job, fmt.Errorf("telegram: %w", sendErr), startTime)
 				return
@@ -268,6 +297,7 @@ func (wp *WorkerPool) Submit(sr SpeakRequest) (*Job, error) {
 		Profile:   sr.Profile,
 		Provider:  sr.Provider,
 		Voice:     sr.Voice,
+		Model:     sr.Model,
 		Speed:     sr.Speed,
 		CreatedAt: time.Now(),
 		Status:    "pending",
