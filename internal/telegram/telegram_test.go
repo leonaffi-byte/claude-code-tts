@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -116,5 +117,79 @@ func TestSendAudio_APIError(t *testing.T) {
 	err := s.SendAudio(context.Background(), []byte("x"), "")
 	if err == nil || !strings.Contains(err.Error(), "chat not found") {
 		t.Fatalf("expected error containing API description, got %v", err)
+	}
+}
+
+func TestGetUpdates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/botT/getUpdates" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"result":[
+			{"update_id":10,"message":{"text":"/voices","chat":{"id":42}}},
+			{"update_id":11,"callback_query":{"id":"cb1","data":"voice:onyx","message":{"chat":{"id":42}}}}
+		]}`))
+	}))
+	defer srv.Close()
+
+	s := NewSender("T", "42")
+	s.baseURL = srv.URL
+	ups, err := s.GetUpdates(context.Background(), 0, 0)
+	if err != nil {
+		t.Fatalf("GetUpdates: %v", err)
+	}
+	if len(ups) != 2 {
+		t.Fatalf("got %d updates, want 2", len(ups))
+	}
+	if ups[0].Message == nil || ups[0].Message.Text != "/voices" || ups[0].Message.Chat.ID != 42 {
+		t.Errorf("update 0 = %+v", ups[0])
+	}
+	if ups[1].CallbackQuery == nil || ups[1].CallbackQuery.Data != "voice:onyx" {
+		t.Errorf("update 1 = %+v", ups[1])
+	}
+}
+
+func TestSendMessage_WithKeyboard(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	s := NewSender("T", "42")
+	s.baseURL = srv.URL
+	kb := [][]InlineButton{{{Text: "Use onyx", CallbackData: "voice:onyx"}}}
+	if err := s.SendMessage(context.Background(), "pick", kb); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if gotPath != "/botT/sendMessage" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if !strings.Contains(gotBody, `"callback_data":"voice:onyx"`) || !strings.Contains(gotBody, `"chat_id"`) {
+		t.Errorf("body missing keyboard/chat_id: %s", gotBody)
+	}
+}
+
+func TestAnswerCallback(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	s := NewSender("T", "42")
+	s.baseURL = srv.URL
+	if err := s.AnswerCallback(context.Background(), "cb1", "done"); err != nil {
+		t.Fatalf("AnswerCallback: %v", err)
+	}
+	if gotPath != "/botT/answerCallbackQuery" {
+		t.Errorf("path = %q", gotPath)
 	}
 }
