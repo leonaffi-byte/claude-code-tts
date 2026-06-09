@@ -55,14 +55,19 @@ func New() (*Server, error) {
 
 	// Start the Telegram control poller when configured + the chat id parses.
 	if tgSender != nil {
+		// ParseInt("0") succeeds but 0 is never a real Telegram chat id.
 		if chatID, err := strconv.ParseInt(reg.TelegramChatID(), 10, 64); err == nil && chatID != 0 {
 			ctx, cancel := context.WithCancel(context.Background())
 			s.pollerStop = cancel
 			poller := botcontrol.NewPoller(tgSender, settingsStore, &registrySource{reg: reg}, chatID)
 			go poller.Run(ctx)
 			logging.Info("Telegram control poller started")
+		} else if id := reg.TelegramChatID(); id != "" {
+			// Telegram delivery still works, but a non-numeric chat_id means the
+			// bot can't take commands — surface it loudly.
+			logging.Error("Telegram poller not started: chat_id %q is not a valid numeric id", id)
 		} else {
-			logging.Info("Telegram poller not started: chat_id missing/invalid")
+			logging.Info("Telegram poller not started: no chat_id configured")
 		}
 	}
 
