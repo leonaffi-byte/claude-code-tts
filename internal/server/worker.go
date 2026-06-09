@@ -31,8 +31,9 @@ type modeReader interface {
 }
 
 // telegramSender delivers audio to Telegram (satisfied by *telegram.Sender).
+// format selects the message type: "opus" → voice message, else audio file.
 type telegramSender interface {
-	SendAudio(ctx context.Context, audio []byte, caption string) error
+	Send(ctx context.Context, audio []byte, format, caption string) error
 }
 
 // SpeakRequest is the input to Submit. When Provider is set it takes precedence
@@ -210,14 +211,18 @@ func (wp *WorkerPool) processJob(job *Job) {
 		}
 	}
 
-	audioOut, err := provider.Synthesize(context.Background(), req)
-	if err != nil {
-		wp.failJob(job, fmt.Errorf("synthesis: %w", err), startTime)
-		return
-	}
-
+	// Telegram delivery: request Opus so it arrives as a voice message (the
+	// provider falls back to its default format if it can't emit Opus, in which
+	// case Send delivers an audio file instead).
 	if mode.SendsTelegram() {
-		if sendErr := wp.telegram.SendAudio(context.Background(), audioOut.Data, job.Text); sendErr != nil {
+		tgReq := req
+		tgReq.Format = "opus"
+		tgAudio, err := provider.Synthesize(context.Background(), tgReq)
+		if err != nil {
+			wp.failJob(job, fmt.Errorf("synthesis (telegram): %w", err), startTime)
+			return
+		}
+		if sendErr := wp.telegram.Send(context.Background(), tgAudio.Data, tgAudio.Format, job.Text); sendErr != nil {
 			if !mode.PlaysLocal() {
 				wp.failJob(job, fmt.Errorf("telegram: %w", sendErr), startTime)
 				return
@@ -226,8 +231,14 @@ func (wp *WorkerPool) processJob(job *Job) {
 		}
 	}
 
+	// Local playback uses the default format (MP3/WAV).
 	if mode.PlaysLocal() {
-		if err := wp.player.Play(audioOut.Data, audioOut.Format); err != nil {
+		localAudio, err := provider.Synthesize(context.Background(), req)
+		if err != nil {
+			wp.failJob(job, fmt.Errorf("synthesis: %w", err), startTime)
+			return
+		}
+		if err := wp.player.Play(localAudio.Data, localAudio.Format); err != nil {
 			wp.failJob(job, fmt.Errorf("playback: %w", err), startTime)
 			return
 		}

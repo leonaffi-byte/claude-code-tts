@@ -67,13 +67,15 @@ func (p *OpenAIProvider) Voices() []string      { return openAIVoices() }
 func (p *OpenAIProvider) DefaultFormat() string { return "mp3" }
 
 type openAIRequest struct {
-	Model string  `json:"model"`
-	Input string  `json:"input"`
-	Voice string  `json:"voice"`
-	Speed float64 `json:"speed,omitempty"`
+	Model          string  `json:"model"`
+	Input          string  `json:"input"`
+	Voice          string  `json:"voice"`
+	Speed          float64 `json:"speed,omitempty"`
+	ResponseFormat string  `json:"response_format,omitempty"`
 }
 
-// Synthesize converts text to MP3 audio.
+// Synthesize converts text to audio. Format "opus" requests Ogg/Opus (for
+// Telegram voice messages); anything else yields MP3.
 func (p *OpenAIProvider) Synthesize(ctx context.Context, req Request) (Audio, error) {
 	if p.apiKey == "" {
 		return Audio{}, fmt.Errorf("openai: OPENAI_API_KEY is not set")
@@ -82,11 +84,16 @@ func (p *OpenAIProvider) Synthesize(ctx context.Context, req Request) (Audio, er
 	if req.Model != "" {
 		model = req.Model
 	}
+	outFmt := "mp3"
+	if req.Format == "opus" {
+		outFmt = "opus"
+	}
 	body := openAIRequest{
-		Model: model,
-		Input: req.Text,
-		Voice: req.Voice,
-		Speed: ClampSpeed(req.Speed, 0.25, 4.0),
+		Model:          model,
+		Input:          req.Text,
+		Voice:          req.Voice,
+		Speed:          ClampSpeed(req.Speed, 0.25, 4.0),
+		ResponseFormat: outFmt,
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -113,5 +120,5 @@ func (p *OpenAIProvider) Synthesize(ctx context.Context, req Request) (Audio, er
 	if err != nil {
 		return Audio{}, fmt.Errorf("openai: read response: %w", err)
 	}
-	return Audio{Data: audio, Format: "mp3"}, nil
+	return Audio{Data: audio, Format: outFmt}, nil
 }

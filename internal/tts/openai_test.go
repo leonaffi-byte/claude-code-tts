@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+func TestOpenAIProvider_Synthesize_Opus(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OGGOPUS"))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAIProvider("sk-test", "tts-1")
+	p.baseURL = srv.URL
+	got, err := p.Synthesize(context.Background(), Request{Text: "hi", Voice: "alloy", Format: "opus"})
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	if got.Format != "opus" {
+		t.Errorf("format = %q, want opus", got.Format)
+	}
+	if gotBody["response_format"] != "opus" {
+		t.Errorf("response_format = %v, want opus", gotBody["response_format"])
+	}
+}
+
 func TestOpenAIProvider_Synthesize(t *testing.T) {
 	var gotAuth, gotPath string
 	var gotBody map[string]any

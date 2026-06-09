@@ -29,21 +29,36 @@ func NewSender(token, chatID string) *Sender {
 	}
 }
 
+// Send delivers audio to the chat, choosing the message type by format:
+// "opus" → a voice message (the round voice bubble, via sendVoice); anything
+// else → a tappable audio file (via sendAudio). caption is optional.
+func (s *Sender) Send(ctx context.Context, audio []byte, format, caption string) error {
+	if format == "opus" {
+		return s.sendFile(ctx, "sendVoice", "voice", "clip.ogg", audio, caption)
+	}
+	return s.sendFile(ctx, "sendAudio", "audio", "clip.mp3", audio, caption)
+}
+
 // SendAudio uploads audio (MP3) to the chat as a tappable audio message.
-// caption is optional (e.g. the spoken text).
 func (s *Sender) SendAudio(ctx context.Context, audio []byte, caption string) error {
+	return s.sendFile(ctx, "sendAudio", "audio", "clip.mp3", audio, caption)
+}
+
+// sendFile POSTs a multipart upload to the given Bot API method, attaching data
+// under the given form field + filename.
+func (s *Sender) sendFile(ctx context.Context, method, field, filename string, data []byte, caption string) error {
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	_ = w.WriteField("chat_id", s.chatID)
 	if caption != "" {
 		_ = w.WriteField("caption", caption)
 	}
-	part, err := w.CreateFormFile("audio", "clip.mp3")
+	part, err := w.CreateFormFile(field, filename)
 	if err != nil {
 		return fmt.Errorf("telegram: create form file: %w", err)
 	}
-	if _, err := part.Write(audio); err != nil {
-		return fmt.Errorf("telegram: write audio: %w", err)
+	if _, err := part.Write(data); err != nil {
+		return fmt.Errorf("telegram: write %s: %w", field, err)
 	}
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("telegram: close writer: %w", err)
@@ -51,7 +66,7 @@ func (s *Sender) SendAudio(ctx context.Context, audio []byte, caption string) er
 
 	// The URL embeds the bot token, so any error carrying it (notably the
 	// *url.Error from Do) must be redacted before it reaches a caller or log.
-	url := fmt.Sprintf("%s/bot%s/sendAudio", s.baseURL, s.token)
+	url := fmt.Sprintf("%s/bot%s/%s", s.baseURL, s.token, method)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
 	if err != nil {
 		return fmt.Errorf("telegram: create request: %s", s.redact(err.Error()))

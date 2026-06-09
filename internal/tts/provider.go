@@ -4,16 +4,17 @@ import "context"
 
 // Request is a provider-agnostic synthesis request.
 type Request struct {
-	Text  string
-	Voice string  // provider-scoped voice id (e.g. "alloy", "eve", or a Piper model name)
-	Speed float64 // 0 = provider default; otherwise clamped to the provider's range
-	Model string  // optional, provider-specific (OpenAI only); "" = provider default
+	Text   string
+	Voice  string  // provider-scoped voice id (e.g. "alloy", "eve", or a Piper model name)
+	Speed  float64 // 0 = provider default; otherwise clamped to the provider's range
+	Model  string  // optional, provider-specific (OpenAI only); "" = provider default
+	Format string  // preferred output: "" / "mp3" = MP3; "opus" = Ogg/Opus (Telegram voice). Providers that can't honor it return their default.
 }
 
 // Audio is synthesized audio plus its container format.
 type Audio struct {
 	Data   []byte
-	Format string // "mp3" | "wav"
+	Format string // "mp3" | "wav" | "opus"
 }
 
 // Provider converts text to speech.

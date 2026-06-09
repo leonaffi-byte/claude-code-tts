@@ -24,7 +24,11 @@ func (f *fakeProvider) Voices() []string      { return nil }
 func (f *fakeProvider) DefaultFormat() string { return f.format }
 func (f *fakeProvider) Synthesize(ctx context.Context, req tts.Request) (tts.Audio, error) {
 	f.calls.Add(1)
-	return tts.Audio{Data: []byte("AUDIO"), Format: f.format}, nil
+	format := f.format
+	if req.Format != "" {
+		format = req.Format // honor an explicit format request (e.g. "opus")
+	}
+	return tts.Audio{Data: []byte("AUDIO"), Format: format}, nil
 }
 
 type fakeResolver struct {
@@ -180,18 +184,25 @@ type fakeMode struct{ m voicemode.Mode }
 func (f fakeMode) Get() voicemode.Mode { return f.m }
 
 type fakeTelegram struct {
-	mu    sync.Mutex
-	calls int
-	err   error
+	mu         sync.Mutex
+	calls      int
+	lastFormat string
+	err        error
 }
 
-func (t *fakeTelegram) SendAudio(ctx context.Context, audio []byte, caption string) error {
+func (t *fakeTelegram) Send(ctx context.Context, audio []byte, format, caption string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.calls++
+	t.lastFormat = format
 	return t.err
 }
 func (t *fakeTelegram) count() int { t.mu.Lock(); defer t.mu.Unlock(); return t.calls }
+func (t *fakeTelegram) format() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastFormat
+}
 
 func newModedPool(mode voicemode.Mode, format string, tg *fakeTelegram, tgReason string) (*WorkerPool, *fakePlayer, *fakeProvider) {
 	prov := &fakeProvider{format: format}
@@ -242,6 +253,9 @@ func TestWorkerPool_Mode_Phone_TelegramOnly(t *testing.T) {
 	waitFor(t, func() bool { return tg.count() == 1 }, "sent to telegram")
 	if n, _, _ := player.snapshot(); n != 0 {
 		t.Errorf("player called in phone mode")
+	}
+	if f := tg.format(); f != "opus" {
+		t.Errorf("telegram format = %q, want opus (voice message)", f)
 	}
 }
 

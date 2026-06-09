@@ -106,24 +106,30 @@ func runSpeak(args []string) {
 		os.Exit(1)
 	}
 
-	out, err := prov.Synthesize(context.Background(), req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error synthesizing speech: %v\n", err)
-		os.Exit(1)
-	}
-
 	if dest.SendsTelegram() {
 		sender, reason := reg.TelegramSender()
 		if sender == nil {
 			fmt.Fprintf(os.Stderr, "Error: telegram not configured (%s)\n", reason)
 			os.Exit(1)
 		}
-		if err := sender.SendAudio(context.Background(), out.Data, text); err != nil {
+		tgReq := req
+		tgReq.Format = "opus" // voice message when the provider can emit Opus
+		tgOut, err := prov.Synthesize(context.Background(), tgReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error synthesizing speech: %v\n", err)
+			os.Exit(1)
+		}
+		if err := sender.Send(context.Background(), tgOut.Data, tgOut.Format, text); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending to telegram: %v\n", err)
 			os.Exit(1)
 		}
 	}
 	if dest.PlaysLocal() {
+		out, err := prov.Synthesize(context.Background(), req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error synthesizing speech: %v\n", err)
+			os.Exit(1)
+		}
 		if err := audio.NewPlayer().Play(out.Data, out.Format); err != nil {
 			fmt.Fprintf(os.Stderr, "Error playing audio: %v\n", err)
 			os.Exit(1)

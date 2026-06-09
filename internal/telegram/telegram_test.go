@@ -8,6 +8,52 @@ import (
 	"testing"
 )
 
+func TestSend_OpusUsesSendVoice(t *testing.T) {
+	var gotPath string
+	gotVoiceFile := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = r.ParseMultipartForm(1 << 20)
+		if _, _, err := r.FormFile("voice"); err == nil {
+			gotVoiceFile = true
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	s := NewSender("T", "9")
+	s.baseURL = srv.URL
+	if err := s.Send(context.Background(), []byte("OGG"), "opus", "hi"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if gotPath != "/botT/sendVoice" {
+		t.Errorf("path = %q, want /botT/sendVoice", gotPath)
+	}
+	if !gotVoiceFile {
+		t.Error("expected a 'voice' file field")
+	}
+}
+
+func TestSend_Mp3UsesSendAudio(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	s := NewSender("T", "9")
+	s.baseURL = srv.URL
+	if err := s.Send(context.Background(), []byte("MP3"), "mp3", ""); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if gotPath != "/botT/sendAudio" {
+		t.Errorf("path = %q, want /botT/sendAudio", gotPath)
+	}
+}
+
 func TestSendAudio_DoesNotLeakToken(t *testing.T) {
 	s := NewSender("SUPER-SECRET-TOKEN", "1")
 	s.baseURL = "http://127.0.0.1:1" // connection refused -> Do returns a *url.Error carrying the URL
