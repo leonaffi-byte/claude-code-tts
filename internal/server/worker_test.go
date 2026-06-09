@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -187,6 +188,7 @@ type fakeTelegram struct {
 	mu         sync.Mutex
 	calls      int
 	lastFormat string
+	lastCap    string
 	err        error
 }
 
@@ -195,6 +197,7 @@ func (t *fakeTelegram) Send(ctx context.Context, audio []byte, format, caption s
 	defer t.mu.Unlock()
 	t.calls++
 	t.lastFormat = format
+	t.lastCap = caption
 	return t.err
 }
 func (t *fakeTelegram) count() int { t.mu.Lock(); defer t.mu.Unlock(); return t.calls }
@@ -202,6 +205,12 @@ func (t *fakeTelegram) format() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.lastFormat
+}
+func (t *fakeTelegram) lastCaption() string { t.mu.Lock(); defer t.mu.Unlock(); return t.lastCap }
+func (t *fakeTelegram) captionHas(s string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.Contains(t.lastCap, s)
 }
 
 func newModedPool(mode voicemode.Mode, format string, tg *fakeTelegram, tgReason string) (*WorkerPool, *fakePlayer, *fakeProvider) {
@@ -306,4 +315,43 @@ func TestWorkerPool_Mode_Phone_NonMP3Fails(t *testing.T) {
 	defer wp.Stop()
 	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "failed: telegram needs mp3")
+}
+
+type fakeSettings struct{ s voicemode.Settings }
+
+func (f fakeSettings) Get() voicemode.Settings { return f.s }
+
+func TestWorkerPool_AppliesSettingsOverride(t *testing.T) {
+	tg := &fakeTelegram{}
+	prov := &fakeProvider{format: "mp3"}
+	player := &fakePlayer{}
+	wp := NewWorkerPool(fakeResolver{prov: prov}, player, 1, 4).
+		WithMode(fakeMode{m: voicemode.Both}).
+		WithTelegram(tg, "").
+		WithSettings(fakeSettings{s: voicemode.Settings{Voice: "onyx", Model: "tts-1-hd"}})
+	wp.Start()
+	defer wp.Stop()
+	// job leaves voice/model empty -> settings override applies.
+	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { return tg.count() == 1 }, "sent")
+	// The fakeResolver returns Voice:"v"; the override must replace it with onyx.
+	if gotV := tg.captionHas("onyx"); !gotV {
+		t.Errorf("telegram caption %q missing overridden voice onyx", tg.lastCaption())
+	}
+}
+
+func TestWorkerPool_ExplicitVoiceBeatsSettings(t *testing.T) {
+	tg := &fakeTelegram{}
+	prov := &fakeProvider{format: "mp3"}
+	wp := NewWorkerPool(fakeResolver{prov: prov}, &fakePlayer{}, 1, 4).
+		WithMode(fakeMode{m: voicemode.Phone}).
+		WithTelegram(tg, "").
+		WithSettings(fakeSettings{s: voicemode.Settings{Voice: "onyx"}})
+	wp.Start()
+	defer wp.Stop()
+	wp.Submit(SpeakRequest{Text: "hi", Provider: "fake", Voice: "echo"}) // explicit voice
+	waitFor(t, func() bool { return tg.count() == 1 }, "sent")
+	if !tg.captionHas("echo") {
+		t.Errorf("caption %q should keep explicit voice echo", tg.lastCaption())
+	}
 }

@@ -41,6 +41,9 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │    server.go: MCP server setup, tool registration           │
 │      - speak(text, profile, provider, voice, speed)         │
 │      - tts_status() → returns pool stats as JSON            │
+│      - wires voicemode.SettingsStore into WorkerPool        │
+│      - starts/stops botcontrol.Poller when a Telegram       │
+│        sender and a numeric chat_id are configured          │
 │                                                             │
 │    worker.go: Worker pool (2 workers, 50-slot queue)        │
 │      - Concurrent job processing with goroutines            │
@@ -68,11 +71,35 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │      Valid, PlaysLocal, SendsTelegram; Store.Get/Set        │
 │      persisted to ~/.claude/plugins/claude-code-tts/        │
 │      state.json (overridable via CLAUDE_TTS_STATE)          │
+│    settings.go: Settings{Voice,Model} + SettingsStore       │
+│      (Get/SetVoice/SetModel) persisted to               │
+│      voice-settings.json (overridable via                   │
+│      CLAUDE_TTS_SETTINGS)                                   │
+│                                                             │
+│  internal/cost/                                             │
+│    cost.go: price table for OpenAI TTS models;              │
+│      CentsFor(provider, model, chars) → estimated cost;     │
+│      EffectiveModel(provider, model) → canonical name;      │
+│      ModelsFor(provider) → available model names;           │
+│      Caption(session, provider, model, voice, chars) →      │
+│        the Telegram voice-message caption                   │
+│                                                             │
+│  internal/session/                                          │
+│    session.go: Label() → per-session caption tag            │
+│      ($CLAUDE_TTS_SESSION, else cwd base name)              │
+│                                                             │
+│  internal/botcontrol/                                       │
+│    poller.go: Poller — long-polls Telegram getUpdates in    │
+│      a goroutine started by tts-server; handles /voices     │
+│      (audio demos + tap-to-select), /model (button menu),  │
+│      /menu, /help (/start); button taps update              │
+│      SettingsStore; only the configured chat_id is honored  │
 │                                                             │
 │  internal/telegram/                                         │
-│    telegram.go: Sender.SendAudio(ctx, []byte, caption)      │
-│      — posts MP3 to Telegram Bot API (sendAudio); token     │
-│      redacted from all error messages                       │
+│    telegram.go: Sender — SendAudio, GetUpdates,             │
+│      SendMessage, AnswerCallback, SendVoiceWithButton;      │
+│      Update/Message/Chat/CallbackQuery/InlineButton types;  │
+│      token redacted from all error messages                 │
 │                                                             │
 │  internal/audio/                                            │
 │    player.go: Cross-platform, format-aware audio playback   │
@@ -109,6 +136,8 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 | `CLAUDE_TTS_SPEED` | Override speech speed (float) |
 | `CLAUDE_TTS_MODEL` | Override model name (e.g. `tts-1-hd`) |
 | `CLAUDE_TTS_STATE` | Path to state JSON for persisted voice mode (default: `~/.claude/plugins/claude-code-tts/state.json`) |
+| `CLAUDE_TTS_SETTINGS` | Path to JSON for the bot-selected voice/model (default: `~/.claude/plugins/claude-code-tts/voice-settings.json`) |
+| `CLAUDE_TTS_SESSION` | Label for this session shown on Telegram captions (default: working-directory base name) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (or use `telegram.bot_token_env` in config to name a different env var) |
 
 ## MCP Tools

@@ -7,7 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ybouhjira/claude-code-tts/internal/cost"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
+	"github.com/ybouhjira/claude-code-tts/internal/session"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
 )
@@ -36,6 +38,12 @@ type telegramSender interface {
 	Send(ctx context.Context, audio []byte, format, caption string) error
 }
 
+// settingsReader reads the persisted voice/model selection (satisfied by
+// *voicemode.SettingsStore).
+type settingsReader interface {
+	Get() voicemode.Settings
+}
+
 // SpeakRequest is the input to Submit. When Provider is set it takes precedence
 // over Profile; Voice/Speed override the resolved request.
 type SpeakRequest struct {
@@ -43,6 +51,7 @@ type SpeakRequest struct {
 	Profile  string
 	Provider string
 	Voice    string
+	Model    string
 	Speed    float64
 }
 
@@ -53,6 +62,7 @@ type Job struct {
 	Profile   string    `json:"profile"`
 	Provider  string    `json:"provider"`
 	Voice     string    `json:"voice"`
+	Model     string    `json:"model,omitempty"`
 	Speed     float64   `json:"speed"`
 	CreatedAt time.Time `json:"created_at"`
 	Status    string    `json:"status"` // pending, processing, completed, failed
@@ -67,6 +77,7 @@ type WorkerPool struct {
 	mode           modeReader     // nil -> always Computer
 	telegram       telegramSender // nil -> Telegram unavailable
 	telegramReason string         // why telegram is unavailable (for error messages)
+	settings       settingsReader // nil -> no override
 	jobs           chan *Job
 	jobHistory     []*Job
 	historyMu      sync.RWMutex
@@ -101,6 +112,18 @@ func (wp *WorkerPool) WithTelegram(s telegramSender, reason string) *WorkerPool 
 	wp.telegram = s
 	wp.telegramReason = reason
 	return wp
+}
+
+// WithSettings sets the persisted voice/model selection source (nil-safe).
+func (wp *WorkerPool) WithSettings(s settingsReader) *WorkerPool { wp.settings = s; return wp }
+
+// settingsGet returns the persisted selection, or zero values when no settings
+// source is wired.
+func (wp *WorkerPool) settingsGet() voicemode.Settings {
+	if wp.settings == nil {
+		return voicemode.Settings{}
+	}
+	return wp.settings.Get()
 }
 
 // Start launches the worker goroutines
@@ -176,6 +199,8 @@ func (wp *WorkerPool) processJob(job *Job) {
 		return
 	}
 
+	st := wp.settingsGet() // bot-selected provider/voice/model (zero value if none)
+
 	var provider tts.Provider
 	var req tts.Request
 	var err error
@@ -184,6 +209,9 @@ func (wp *WorkerPool) processJob(job *Job) {
 		provider, req, err = wp.resolver.ResolveVoice(job.Provider, job.Voice, job.Speed)
 	case job.Profile != "":
 		provider, req, err = wp.resolver.Resolve(job.Profile)
+	case st.Provider != "":
+		// Bot-selected provider overrides the configured default.
+		provider, req, err = wp.resolver.ResolveVoice(st.Provider, st.Voice, 0)
 	default:
 		provider, req, err = wp.resolver.Default()
 	}
@@ -194,8 +222,17 @@ func (wp *WorkerPool) processJob(job *Job) {
 	if job.Voice != "" {
 		req.Voice = job.Voice
 	}
+	if job.Model != "" {
+		req.Model = job.Model
+	}
 	if job.Speed != 0 {
 		req.Speed = job.Speed
+	}
+	if st.Voice != "" && job.Voice == "" {
+		req.Voice = st.Voice
+	}
+	if st.Model != "" && job.Model == "" {
+		req.Model = st.Model
 	}
 	req.Text = job.Text
 
@@ -222,7 +259,8 @@ func (wp *WorkerPool) processJob(job *Job) {
 			wp.failJob(job, fmt.Errorf("synthesis (telegram): %w", err), startTime)
 			return
 		}
-		if sendErr := wp.telegram.Send(context.Background(), tgAudio.Data, tgAudio.Format, job.Text); sendErr != nil {
+		caption := cost.Caption(session.Label(), provider.Name(), req.Model, req.Voice, len(job.Text))
+		if sendErr := wp.telegram.Send(context.Background(), tgAudio.Data, tgAudio.Format, caption); sendErr != nil {
 			if !mode.PlaysLocal() {
 				wp.failJob(job, fmt.Errorf("telegram: %w", sendErr), startTime)
 				return
@@ -268,6 +306,7 @@ func (wp *WorkerPool) Submit(sr SpeakRequest) (*Job, error) {
 		Profile:   sr.Profile,
 		Provider:  sr.Provider,
 		Voice:     sr.Voice,
+		Model:     sr.Model,
 		Speed:     sr.Speed,
 		CreatedAt: time.Now(),
 		Status:    "pending",
@@ -326,6 +365,7 @@ func (wp *WorkerPool) GetStatus() PoolStatus {
 			Profile:   job.Profile,
 			Provider:  job.Provider,
 			Voice:     job.Voice,
+			Model:     job.Model,
 			Speed:     job.Speed,
 			CreatedAt: job.CreatedAt,
 			Status:    job.Status,

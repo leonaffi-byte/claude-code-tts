@@ -163,6 +163,14 @@ func (r *Registry) TelegramSender() (*telegram.Sender, string) {
 	return telegram.NewSender(token, tc.ChatID), ""
 }
 
+// TelegramChatID returns the configured Telegram chat id ("" when unset).
+func (r *Registry) TelegramChatID() string {
+	if r.cfg.Telegram == nil {
+		return ""
+	}
+	return r.cfg.Telegram.ChatID
+}
+
 // nameOr returns name when non-empty, otherwise fallback. It returns an
 // env-var *name* (e.g. "OPENAI_API_KEY"); it does not read the environment.
 func nameOr(name, fallback string) string {
