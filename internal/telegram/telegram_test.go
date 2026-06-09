@@ -175,6 +175,32 @@ func TestSendMessage_WithKeyboard(t *testing.T) {
 	}
 }
 
+func TestSendMenu_PersistentReplyKeyboard(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	s := NewSender("T", "42")
+	s.baseURL = srv.URL
+	if err := s.SendMenu(context.Background(), "menu", [][]string{{"🎙 Voices", "🎚 Model"}}); err != nil {
+		t.Fatalf("SendMenu: %v", err)
+	}
+	if gotPath != "/botT/sendMessage" {
+		t.Errorf("path = %q", gotPath)
+	}
+	for _, want := range []string{`"keyboard"`, `"is_persistent":true`, "🎙 Voices"} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("body missing %q: %s", want, gotBody)
+		}
+	}
+}
+
 func TestAnswerCallback(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -116,12 +116,37 @@ func (s *Sender) GetUpdates(ctx context.Context, offset, timeoutSecs int) ([]Upd
 
 // SendMessage posts a text message with an optional inline keyboard.
 func (s *Sender) SendMessage(ctx context.Context, text string, keyboard [][]InlineButton) error {
-	payload := map[string]any{
-		"chat_id": s.chatID,
-		"text":    text,
-	}
+	var markup any
 	if len(keyboard) > 0 {
-		payload["reply_markup"] = map[string]any{"inline_keyboard": keyboard}
+		markup = map[string]any{"inline_keyboard": keyboard}
+	}
+	return s.sendMessage(ctx, text, markup)
+}
+
+// SendMenu posts a message with a persistent reply keyboard — always-visible
+// buttons above the text box that the user taps instead of typing commands.
+// rows holds the button labels, one inner slice per keyboard row.
+func (s *Sender) SendMenu(ctx context.Context, text string, rows [][]string) error {
+	keyboard := make([][]map[string]string, len(rows))
+	for i, row := range rows {
+		btns := make([]map[string]string, len(row))
+		for j, label := range row {
+			btns[j] = map[string]string{"text": label}
+		}
+		keyboard[i] = btns
+	}
+	return s.sendMessage(ctx, text, map[string]any{
+		"keyboard":        keyboard,
+		"resize_keyboard": true,
+		"is_persistent":   true,
+	})
+}
+
+// sendMessage posts text with an optional reply_markup (inline or reply keyboard).
+func (s *Sender) sendMessage(ctx context.Context, text string, replyMarkup any) error {
+	payload := map[string]any{"chat_id": s.chatID, "text": text}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

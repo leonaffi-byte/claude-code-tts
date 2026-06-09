@@ -11,6 +11,7 @@ import (
 
 type fakeBot struct {
 	sentMsgs   []string
+	menus      []string
 	voiceDemos []string
 	answers    []string
 }
@@ -20,6 +21,10 @@ func (f *fakeBot) GetUpdates(ctx context.Context, offset, timeout int) ([]telegr
 }
 func (f *fakeBot) SendMessage(ctx context.Context, text string, kb [][]telegram.InlineButton) error {
 	f.sentMsgs = append(f.sentMsgs, text)
+	return nil
+}
+func (f *fakeBot) SendMenu(ctx context.Context, text string, rows [][]string) error {
+	f.menus = append(f.menus, text)
 	return nil
 }
 func (f *fakeBot) AnswerCallback(ctx context.Context, id, text string) error {
@@ -70,6 +75,29 @@ func TestPoller_ModelCommandSendsMenu(t *testing.T) {
 		t.Errorf("got %d messages, want 1 model menu", len(bot.sentMsgs))
 	} else if !strings.Contains(bot.sentMsgs[0], "Pick a model") {
 		t.Errorf("model menu text = %q, want it to mention 'Pick a model'", bot.sentMsgs[0])
+	}
+}
+
+func TestPoller_ButtonLabelTriggersVoices(t *testing.T) {
+	bot := &fakeBot{}
+	p, _ := newTestPoller(t, bot)
+	// Tapping the persistent "🎙 Voices" button sends its label text.
+	p.handleUpdate(context.Background(), telegram.Update{
+		Message: &telegram.Message{Text: btnVoices, Chat: telegram.Chat{ID: 42}},
+	})
+	if len(bot.voiceDemos) != 2 {
+		t.Errorf("tapping the Voices button should send demos, got %d", len(bot.voiceDemos))
+	}
+}
+
+func TestPoller_StartShowsButtonMenu(t *testing.T) {
+	bot := &fakeBot{}
+	p, _ := newTestPoller(t, bot)
+	p.handleUpdate(context.Background(), telegram.Update{
+		Message: &telegram.Message{Text: "/start", Chat: telegram.Chat{ID: 42}},
+	})
+	if len(bot.menus) != 1 {
+		t.Errorf("/start should install the button keyboard, got %d menus", len(bot.menus))
 	}
 }
 

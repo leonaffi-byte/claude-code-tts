@@ -15,8 +15,22 @@ import (
 type botSender interface {
 	GetUpdates(ctx context.Context, offset, timeout int) ([]telegram.Update, error)
 	SendMessage(ctx context.Context, text string, keyboard [][]telegram.InlineButton) error
+	SendMenu(ctx context.Context, text string, rows [][]string) error
 	AnswerCallback(ctx context.Context, callbackID, text string) error
 	SendVoiceWithButton(ctx context.Context, audio []byte, caption string, keyboard [][]telegram.InlineButton) error
+}
+
+// Main-menu button labels. Tapping one of these on the persistent reply keyboard
+// sends its text, which handleCommand routes the same as the matching command.
+const (
+	btnVoices = "🎙 Voices"
+	btnModel  = "🎚 Model"
+	btnMenu   = "⚙️ Menu"
+	btnHelp   = "❓ Help"
+)
+
+func mainMenuRows() [][]string {
+	return [][]string{{btnVoices, btnModel}, {btnMenu, btnHelp}}
 }
 
 // settingsWriter persists the user's selection (satisfied by *voicemode.SettingsStore).
@@ -116,41 +130,59 @@ func (p *Poller) handleUpdate(ctx context.Context, u telegram.Update) {
 }
 
 func (p *Poller) handleCommand(ctx context.Context, text string) {
-	cmd := strings.Fields(text)
-	if len(cmd) == 0 {
-		return
+	t := strings.TrimSpace(text)
+	first := t
+	if f := strings.Fields(t); len(f) > 0 {
+		first = f[0] // for "/voices …" style commands
 	}
-	switch cmd[0] {
-	case "/voices":
-		voices := p.src.Voices()
-		if len(voices) == 0 {
-			p.bot.SendMessage(ctx, "No voices are available for the current provider.", nil)
-			return
-		}
-		p.bot.SendMessage(ctx, "🎙 Here are the voices. Listen to each clip, then tap \"✅ Use …\" under the one you want — it becomes my voice for everything I say next.", nil)
-		for _, v := range voices {
-			audio, _, err := p.src.Demo(ctx, v)
-			if err != nil {
-				logging.Error("botcontrol: demo %q: %v", v, err)
-				continue
-			}
-			kb := [][]telegram.InlineButton{{{Text: "✅ Use " + v, CallbackData: "voice:" + v}}}
-			if err := p.bot.SendVoiceWithButton(ctx, audio, "🔊 Voice: "+v, kb); err != nil {
-				logging.Error("botcontrol: send demo %q: %v", v, err)
-			}
-		}
-	case "/model":
+	switch {
+	case t == btnVoices || first == "/voices":
+		p.sendVoices(ctx)
+	case t == btnModel || first == "/model":
 		p.bot.SendMessage(ctx, "🎚 Pick a model — tap one (higher quality costs more):", modelKeyboard(p.src.Models()))
-	case "/menu":
+	case t == btnMenu || first == "/menu":
 		st := p.settings.Get()
 		p.bot.SendMessage(ctx, fmt.Sprintf(
-			"⚙️ Current settings\n• Voice: %s\n• Model: %s\n\nTap a model below to change it, or send /voices to change the voice.",
+			"⚙️ Current settings\n• Voice: %s\n• Model: %s\n\nTap 🎙 Voices to change the voice, or a model below to change the model.",
 			orDefault(st.Voice, "default"), orDefault(st.Model, "default")),
 			modelKeyboard(p.src.Models()))
-	case "/help", "/start":
-		p.bot.SendMessage(ctx, "👋 Hi! I speak Claude's replies aloud here, and you control the voice from your phone.\n\nCommands:\n• /voices — hear every voice, then tap ✅ to use one\n• /model — choose the model (quality vs. cost)\n• /menu — show your current voice & model\n• /help — show this message\n\nEvery voice message I send is labeled with the project it came from and its estimated cost.", nil)
+	case t == btnHelp || first == "/help" || first == "/start":
+		p.sendWelcome(ctx)
 	default:
-		p.bot.SendMessage(ctx, "🤔 I didn't recognize that. Try /voices, /model, /menu, or /help.", nil)
+		// Anything else: (re)show the button keyboard so the user never has to type.
+		p.bot.SendMenu(ctx, "👇 Tap a button to control my voice.", mainMenuRows())
+	}
+}
+
+// sendWelcome greets the user and installs the persistent button keyboard.
+func (p *Poller) sendWelcome(ctx context.Context) {
+	p.bot.SendMenu(ctx,
+		"👋 Hi! I speak Claude's replies aloud here. Use the buttons below — no typing needed:\n\n"+
+			"• 🎙 Voices — hear each voice, then tap ✅ to use one\n"+
+			"• 🎚 Model — choose quality vs. cost\n"+
+			"• ⚙️ Menu — show your current voice & model\n\n"+
+			"Every voice message is labeled with the project it came from and its estimated cost.",
+		mainMenuRows())
+}
+
+// sendVoices plays a demo of each voice, each with a tap-to-use button.
+func (p *Poller) sendVoices(ctx context.Context) {
+	voices := p.src.Voices()
+	if len(voices) == 0 {
+		p.bot.SendMessage(ctx, "No voices are available for the current provider.", nil)
+		return
+	}
+	p.bot.SendMessage(ctx, "🎙 Listen to each clip, then tap \"✅ Use …\" under the one you want — it becomes my voice for everything I say next.", nil)
+	for _, v := range voices {
+		audio, _, err := p.src.Demo(ctx, v)
+		if err != nil {
+			logging.Error("botcontrol: demo %q: %v", v, err)
+			continue
+		}
+		kb := [][]telegram.InlineButton{{{Text: "✅ Use " + v, CallbackData: "voice:" + v}}}
+		if err := p.bot.SendVoiceWithButton(ctx, audio, "🔊 Voice: "+v, kb); err != nil {
+			logging.Error("botcontrol: send demo %q: %v", v, err)
+		}
 	}
 }
 
