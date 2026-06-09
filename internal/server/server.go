@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/ybouhjira/claude-code-tts/internal/audio"
+	"github.com/ybouhjira/claude-code-tts/internal/botcontrol"
+	"github.com/ybouhjira/claude-code-tts/internal/cost"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/ttsconfig"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
@@ -18,6 +21,7 @@ type Server struct {
 	mcpServer  *server.MCPServer
 	workerPool *WorkerPool
 	modeStore  *voicemode.Store
+	pollerStop context.CancelFunc // nil when no poller
 }
 
 // New creates a new TTS MCP server
@@ -27,10 +31,12 @@ func New() (*Server, error) {
 	reg := ttsconfig.LoadOrDefault()
 	player := audio.NewPlayer()
 	modeStore := voicemode.DefaultStore()
+	settingsStore := voicemode.DefaultSettingsStore()
 	tgSender, tgReason := reg.TelegramSender()
 
 	wp := NewWorkerPool(reg, player, 2, 50).
-		WithMode(modeStore)
+		WithMode(modeStore).
+		WithSettings(settingsStore)
 	// Keep this if/else: do NOT collapse it to WithTelegram(tgSender, tgReason).
 	// tgSender is a *telegram.Sender, so when it's nil, passing it through the
 	// telegramSender interface yields a non-nil typed-nil interface and
@@ -46,6 +52,20 @@ func New() (*Server, error) {
 
 	mcpSrv := server.NewMCPServer("claude-code-tts", "1.0.0", server.WithToolCapabilities(true))
 	s := &Server{mcpServer: mcpSrv, workerPool: wp, modeStore: modeStore}
+
+	// Start the Telegram control poller when configured + the chat id parses.
+	if tgSender != nil {
+		if chatID, err := strconv.ParseInt(reg.TelegramChatID(), 10, 64); err == nil && chatID != 0 {
+			ctx, cancel := context.WithCancel(context.Background())
+			s.pollerStop = cancel
+			poller := botcontrol.NewPoller(tgSender, settingsStore, &registrySource{reg: reg}, chatID)
+			go poller.Run(ctx)
+			logging.Info("Telegram control poller started")
+		} else {
+			logging.Info("Telegram poller not started: chat_id missing/invalid")
+		}
+	}
+
 	s.registerTools()
 	return s, nil
 }
@@ -211,6 +231,44 @@ func (s *Server) Start() error {
 // Shutdown gracefully stops the server
 func (s *Server) Shutdown() {
 	logging.Info("Server shutdown initiated...")
+	if s.pollerStop != nil {
+		s.pollerStop()
+	}
 	s.workerPool.Stop()
 	logging.Info("Server shutdown complete")
+}
+
+// registrySource adapts the ttsconfig registry to botcontrol.voiceModelSource:
+// it reports the current provider's voices/models and synthesizes demo clips.
+type registrySource struct{ reg *ttsconfig.Registry }
+
+func (s *registrySource) Voices() []string {
+	prov, _, err := s.reg.Default()
+	if err != nil {
+		return nil
+	}
+	return prov.Voices()
+}
+
+func (s *registrySource) Models() []string {
+	prov, _, err := s.reg.Default()
+	if err != nil {
+		return nil
+	}
+	return cost.ModelsFor(prov.Name())
+}
+
+func (s *registrySource) Demo(ctx context.Context, voice string) ([]byte, string, error) {
+	prov, req, err := s.reg.Default()
+	if err != nil {
+		return nil, "", err
+	}
+	req.Voice = voice
+	req.Text = "Hi, this is the " + voice + " voice."
+	req.Format = "opus"
+	a, err := prov.Synthesize(ctx, req)
+	if err != nil {
+		return nil, "", err
+	}
+	return a.Data, a.Format, nil
 }
