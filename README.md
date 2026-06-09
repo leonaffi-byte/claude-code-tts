@@ -373,6 +373,29 @@ Telegram delivery requires an MP3-capable provider (OpenAI or Grok). Piper produ
    # → telegram: configured
    ```
 
+### Interactive bot commands
+
+Once Telegram is configured and Claude Code is open, you can control the voice directly from your phone. The bot only responds while `tts-server` is running (i.e. while Claude Code is open), and it only obeys messages from the configured `chat_id`.
+
+| Command | What it does |
+|---------|-------------|
+| `/voices` | Sends an audio demo clip for every available voice. Tap the "Use \<voice\>" button under any clip to switch to it immediately. |
+| `/model` | Shows a button menu of available models (e.g. `tts-1`, `tts-1-hd`). Tap one to switch. |
+| `/menu` | Displays the currently selected voice and model with the model picker. |
+| `/help` | Lists the available commands. (Also triggered by `/start`.) |
+
+Selections made via the bot persist in `~/.claude/plugins/claude-code-tts/voice-settings.json` and take effect for every subsequent `speak` call without restarting the server.
+
+### Voice message caption
+
+Every voice message sent to Telegram includes a caption with the estimated cost, the active model, and the active voice:
+
+```
+0.02¢ · tts-1 · alloy
+```
+
+The cost estimate is based on the character count of the synthesized text and the OpenAI pricing table for the active model.
+
 ## Troubleshooting
 
 ### "openai: OPENAI_API_KEY is not set" (or "grok: XAI_API_KEY is not set")
