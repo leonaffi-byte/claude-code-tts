@@ -2,6 +2,7 @@ package botcontrol
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ybouhjira/claude-code-tts/internal/telegram"
@@ -63,6 +64,8 @@ func TestPoller_ModelCommandSendsMenu(t *testing.T) {
 	})
 	if len(bot.sentMsgs) != 1 {
 		t.Errorf("got %d messages, want 1 model menu", len(bot.sentMsgs))
+	} else if !strings.Contains(bot.sentMsgs[0], "Pick a model") {
+		t.Errorf("model menu text = %q, want it to mention 'Pick a model'", bot.sentMsgs[0])
 	}
 }
 
@@ -82,11 +85,19 @@ func TestPoller_CallbackSetsVoice(t *testing.T) {
 
 func TestPoller_IgnoresWrongChat(t *testing.T) {
 	bot := &fakeBot{}
-	p, _ := newTestPoller(t, bot)
+	p, ss := newTestPoller(t, bot)
+	// A command from the wrong chat must do nothing.
 	p.handleUpdate(context.Background(), telegram.Update{
 		Message: &telegram.Message{Text: "/voices", Chat: telegram.Chat{ID: 999}},
 	})
-	if len(bot.voiceDemos) != 0 || len(bot.sentMsgs) != 0 {
-		t.Errorf("update from wrong chat should be ignored")
+	// A button tap from the wrong chat must not change settings or be answered.
+	p.handleUpdate(context.Background(), telegram.Update{
+		CallbackQuery: &telegram.CallbackQuery{ID: "x", Data: "voice:onyx", Message: &telegram.Message{Chat: telegram.Chat{ID: 999}}},
+	})
+	if len(bot.voiceDemos) != 0 || len(bot.sentMsgs) != 0 || len(bot.answers) != 0 {
+		t.Errorf("updates from the wrong chat should be ignored")
+	}
+	if ss.Get().Voice != "" {
+		t.Errorf("wrong-chat callback must not change settings, got voice %q", ss.Get().Voice)
 	}
 }

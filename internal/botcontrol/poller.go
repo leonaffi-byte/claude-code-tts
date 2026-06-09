@@ -50,7 +50,9 @@ func NewPoller(bot botSender, settings settingsWriter, src voiceModelSource, cha
 // Run long-polls Telegram until ctx is cancelled. It never returns an error;
 // transient failures are logged and retried.
 func (p *Poller) Run(ctx context.Context) {
-	offset := 0
+	// Skip any updates queued while we were offline so old commands (e.g. a
+	// /voices sent yesterday, which would re-bill demos) don't replay on start.
+	offset := p.drainBacklog(ctx)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -79,6 +81,23 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
+// drainBacklog returns the offset just past any already-queued updates, without
+// acting on them. Telegram redelivers unacknowledged updates, so a fresh process
+// (offset 0) would otherwise reprocess commands sent while it was offline.
+func (p *Poller) drainBacklog(ctx context.Context) int {
+	offset := 0
+	ups, err := p.bot.GetUpdates(ctx, 0, 0)
+	if err != nil {
+		return 0
+	}
+	for _, u := range ups {
+		if u.UpdateID >= offset {
+			offset = u.UpdateID + 1
+		}
+	}
+	return offset
+}
+
 // handleUpdate processes a single update (commands and button taps). It ignores
 // anything not from the configured chat id.
 func (p *Poller) handleUpdate(ctx context.Context, u telegram.Update) {
@@ -104,12 +123,11 @@ func (p *Poller) handleCommand(ctx context.Context, text string) {
 	switch cmd[0] {
 	case "/voices":
 		for _, v := range p.src.Voices() {
-			audio, format, err := p.src.Demo(ctx, v)
+			audio, _, err := p.src.Demo(ctx, v)
 			if err != nil {
 				logging.Error("botcontrol: demo %q: %v", v, err)
 				continue
 			}
-			_ = format
 			kb := [][]telegram.InlineButton{{{Text: "✅ Use " + v, CallbackData: "voice:" + v}}}
 			if err := p.bot.SendVoiceWithButton(ctx, audio, "🔊 "+v, kb); err != nil {
 				logging.Error("botcontrol: send demo %q: %v", v, err)
