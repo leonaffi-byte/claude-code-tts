@@ -78,9 +78,15 @@ func (s *Sender) SendAudio(ctx context.Context, audio []byte, caption string) er
 	return s.sendFile(ctx, "sendAudio", "audio", "clip.mp3", audio, caption, nil)
 }
 
-// SendVoiceWithButton sends an Opus voice message with an inline keyboard.
-func (s *Sender) SendVoiceWithButton(ctx context.Context, audio []byte, caption string, keyboard [][]InlineButton) error {
-	return s.sendFile(ctx, "sendVoice", "voice", "clip.ogg", audio, caption, keyboard)
+// SendClipWithButton sends an audio clip with an inline keyboard, choosing the
+// message type by format: "opus" → a voice message (sendVoice), anything else →
+// a tappable audio file (sendAudio). This lets MP3-only providers (Grok) send
+// demos with a "Use this" button, not just OpenAI's Opus.
+func (s *Sender) SendClipWithButton(ctx context.Context, audio []byte, format, caption string, keyboard [][]InlineButton) error {
+	if format == "opus" {
+		return s.sendFile(ctx, "sendVoice", "voice", "clip.ogg", audio, caption, keyboard)
+	}
+	return s.sendFile(ctx, "sendAudio", "audio", "clip.mp3", audio, caption, keyboard)
 }
 
 // GetUpdates long-polls for new updates starting at offset. timeoutSecs is the

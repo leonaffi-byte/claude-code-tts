@@ -117,6 +117,15 @@ func (wp *WorkerPool) WithTelegram(s telegramSender, reason string) *WorkerPool 
 // WithSettings sets the persisted voice/model selection source (nil-safe).
 func (wp *WorkerPool) WithSettings(s settingsReader) *WorkerPool { wp.settings = s; return wp }
 
+// settingsGet returns the persisted selection, or zero values when no settings
+// source is wired.
+func (wp *WorkerPool) settingsGet() voicemode.Settings {
+	if wp.settings == nil {
+		return voicemode.Settings{}
+	}
+	return wp.settings.Get()
+}
+
 // Start launches the worker goroutines
 func (wp *WorkerPool) Start() {
 	for i := 0; i < wp.workerCount; i++ {
@@ -190,6 +199,8 @@ func (wp *WorkerPool) processJob(job *Job) {
 		return
 	}
 
+	st := wp.settingsGet() // bot-selected provider/voice/model (zero value if none)
+
 	var provider tts.Provider
 	var req tts.Request
 	var err error
@@ -198,6 +209,9 @@ func (wp *WorkerPool) processJob(job *Job) {
 		provider, req, err = wp.resolver.ResolveVoice(job.Provider, job.Voice, job.Speed)
 	case job.Profile != "":
 		provider, req, err = wp.resolver.Resolve(job.Profile)
+	case st.Provider != "":
+		// Bot-selected provider overrides the configured default.
+		provider, req, err = wp.resolver.ResolveVoice(st.Provider, st.Voice, 0)
 	default:
 		provider, req, err = wp.resolver.Default()
 	}
@@ -214,14 +228,11 @@ func (wp *WorkerPool) processJob(job *Job) {
 	if job.Speed != 0 {
 		req.Speed = job.Speed
 	}
-	if wp.settings != nil {
-		st := wp.settings.Get()
-		if st.Voice != "" && job.Voice == "" {
-			req.Voice = st.Voice
-		}
-		if st.Model != "" && job.Model == "" {
-			req.Model = st.Model
-		}
+	if st.Voice != "" && job.Voice == "" {
+		req.Voice = st.Voice
+	}
+	if st.Model != "" && job.Model == "" {
+		req.Model = st.Model
 	}
 	req.Text = job.Text
 

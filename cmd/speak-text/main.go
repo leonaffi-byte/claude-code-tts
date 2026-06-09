@@ -77,6 +77,7 @@ func runSpeak(args []string) {
 	}
 
 	reg := ttsconfig.LoadOrDefault()
+	st := voicemode.DefaultSettingsStore().Get()
 
 	var prov tts.Provider
 	var req tts.Request
@@ -86,6 +87,9 @@ func runSpeak(args []string) {
 		prov, req, err = reg.ResolveVoice(*providerFlag, *voice, *speed)
 	case *profile != "":
 		prov, req, err = reg.Resolve(*profile)
+	case st.Provider != "":
+		// Bot-selected provider overrides the configured default.
+		prov, req, err = reg.ResolveVoice(st.Provider, st.Voice, *speed)
 	default:
 		prov, req, err = reg.Default()
 	}
@@ -103,7 +107,6 @@ func runSpeak(args []string) {
 	}
 	req.Text = text
 
-	st := voicemode.DefaultSettingsStore().Get()
 	if st.Voice != "" && *voice == "" {
 		req.Voice = st.Voice
 	}

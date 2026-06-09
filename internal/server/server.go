@@ -12,6 +12,7 @@ import (
 	"github.com/ybouhjira/claude-code-tts/internal/botcontrol"
 	"github.com/ybouhjira/claude-code-tts/internal/cost"
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
+	"github.com/ybouhjira/claude-code-tts/internal/tts"
 	"github.com/ybouhjira/claude-code-tts/internal/ttsconfig"
 	"github.com/ybouhjira/claude-code-tts/internal/voicemode"
 )
@@ -59,7 +60,7 @@ func New() (*Server, error) {
 		if chatID, err := strconv.ParseInt(reg.TelegramChatID(), 10, 64); err == nil && chatID != 0 {
 			ctx, cancel := context.WithCancel(context.Background())
 			s.pollerStop = cancel
-			poller := botcontrol.NewPoller(tgSender, settingsStore, &registrySource{reg: reg}, chatID)
+			poller := botcontrol.NewPoller(tgSender, settingsStore, &registrySource{reg: reg, settings: settingsStore}, chatID)
 			go poller.Run(ctx)
 			logging.Info("Telegram control poller started")
 		} else if id := reg.TelegramChatID(); id != "" {
@@ -247,11 +248,32 @@ func (s *Server) Shutdown() {
 }
 
 // registrySource adapts the ttsconfig registry to botcontrol.voiceModelSource:
-// it reports the current provider's voices/models and synthesizes demo clips.
-type registrySource struct{ reg *ttsconfig.Registry }
+// it reports the active provider's voices/models and synthesizes demo clips,
+// honoring a bot-selected provider from the settings store.
+type registrySource struct {
+	reg      *ttsconfig.Registry
+	settings *voicemode.SettingsStore
+}
+
+// current resolves the active provider+request. A bot-selected provider (from
+// the settings store) overrides the configured default.
+func (s *registrySource) current() (tts.Provider, tts.Request, error) {
+	if st := s.settings.Get(); st.Provider != "" {
+		return s.reg.ResolveVoice(st.Provider, st.Voice, 0)
+	}
+	return s.reg.Default()
+}
+
+func (s *registrySource) Provider() string {
+	prov, _, err := s.current()
+	if err != nil {
+		return ""
+	}
+	return prov.Name()
+}
 
 func (s *registrySource) Voices() []string {
-	prov, _, err := s.reg.Default()
+	prov, _, err := s.current()
 	if err != nil {
 		return nil
 	}
@@ -259,7 +281,7 @@ func (s *registrySource) Voices() []string {
 }
 
 func (s *registrySource) Models() []string {
-	prov, _, err := s.reg.Default()
+	prov, _, err := s.current()
 	if err != nil {
 		return nil
 	}
@@ -267,7 +289,7 @@ func (s *registrySource) Models() []string {
 }
 
 func (s *registrySource) Demo(ctx context.Context, voice string) ([]byte, string, error) {
-	prov, req, err := s.reg.Default()
+	prov, req, err := s.current()
 	if err != nil {
 		return nil, "", err
 	}

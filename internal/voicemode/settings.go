@@ -8,10 +8,11 @@ import (
 	"sync"
 )
 
-// Settings is the user's persisted voice/model selection (empty = profile default).
+// Settings is the user's persisted selection (empty fields = profile default).
 type Settings struct {
-	Voice string `json:"voice"`
-	Model string `json:"model"`
+	Voice    string `json:"voice"`
+	Model    string `json:"model"`
+	Provider string `json:"provider"` // "" = configured default; e.g. "openai", "grok"
 }
 
 // SettingsStore persists Settings to a JSON file.
@@ -52,6 +53,16 @@ func (s *SettingsStore) Get() Settings {
 		return Settings{}
 	}
 	return st
+}
+
+// SetProvider switches the provider and clears the voice + model, since those
+// are provider-specific and would otherwise carry over and be invalid.
+func (s *SettingsStore) SetProvider(p string) error {
+	return s.update(func(st *Settings) {
+		st.Provider = p
+		st.Voice = ""
+		st.Model = ""
+	})
 }
 
 // SetVoice updates the voice, preserving the model.

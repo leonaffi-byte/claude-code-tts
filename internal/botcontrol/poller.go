@@ -18,21 +18,22 @@ type botSender interface {
 	SendMessage(ctx context.Context, text string, keyboard [][]telegram.InlineButton) error
 	SendMenu(ctx context.Context, text string, rows [][]string) error
 	AnswerCallback(ctx context.Context, callbackID, text string) error
-	SendVoiceWithButton(ctx context.Context, audio []byte, caption string, keyboard [][]telegram.InlineButton) error
+	SendClipWithButton(ctx context.Context, audio []byte, format, caption string, keyboard [][]telegram.InlineButton) error
 }
 
 // Main-menu button labels. Tapping one of these on the persistent reply keyboard
 // sends its text, which handleCommand routes the same as the matching command.
 const (
-	btnVoices = "🎙 Voices"
-	btnModel  = "🎚 Model"
-	btnPrices = "💲 Prices"
-	btnMenu   = "⚙️ Menu"
-	btnHelp   = "❓ Help"
+	btnVoices   = "🎙 Voices"
+	btnModel    = "🎚 Model"
+	btnProvider = "🔀 Provider"
+	btnPrices   = "💲 Prices"
+	btnMenu     = "⚙️ Menu"
+	btnHelp     = "❓ Help"
 )
 
 func mainMenuRows() [][]string {
-	return [][]string{{btnVoices, btnModel}, {btnPrices, btnMenu}, {btnHelp}}
+	return [][]string{{btnVoices, btnModel}, {btnProvider, btnPrices}, {btnMenu, btnHelp}}
 }
 
 // settingsWriter persists the user's selection (satisfied by *voicemode.SettingsStore).
@@ -40,11 +41,13 @@ type settingsWriter interface {
 	Get() voicemode.Settings
 	SetVoice(string) error
 	SetModel(string) error
+	SetProvider(string) error
 }
 
 // voiceModelSource exposes the current provider's voices/models and synthesizes
 // demo clips.
 type voiceModelSource interface {
+	Provider() string // current effective provider name (e.g. "openai", "grok")
 	Voices() []string
 	Models() []string
 	Demo(ctx context.Context, voice string) (audio []byte, format string, err error)
@@ -142,11 +145,13 @@ func (p *Poller) handleCommand(ctx context.Context, text string) {
 		p.sendVoices(ctx)
 	case t == btnModel || first == "/model":
 		p.bot.SendMessage(ctx, "🎚 Pick a model — tap one (higher quality costs more):", modelKeyboard(p.src.Models()))
+	case t == btnProvider || first == "/provider":
+		p.bot.SendMessage(ctx, "🔀 Pick a provider — tap one (switching resets the voice to that provider's default):", providerKeyboard())
 	case t == btnMenu || first == "/menu":
 		st := p.settings.Get()
 		p.bot.SendMessage(ctx, fmt.Sprintf(
-			"⚙️ Current settings\n• Voice: %s\n• Model: %s\n\nTap 🎙 Voices to change the voice, or a model below to change the model.",
-			orDefault(st.Voice, "default"), orDefault(st.Model, "default")),
+			"⚙️ Current settings\n• Provider: %s\n• Voice: %s\n• Model: %s\n\nTap 🎙 Voices to change the voice, 🔀 Provider to switch provider, or a model below.",
+			providerTitle(p.src.Provider()), orDefault(st.Voice, "default"), orDefault(st.Model, "default")),
 			modelKeyboard(p.src.Models()))
 	case t == btnPrices || first == "/prices":
 		p.bot.SendMessage(ctx, pricesMessage(), nil)
@@ -164,8 +169,9 @@ func (p *Poller) sendWelcome(ctx context.Context) {
 		"👋 Hi! I speak Claude's replies aloud here. Use the buttons below — no typing needed:\n\n"+
 			"• 🎙 Voices — hear each voice, then tap ✅ to use one\n"+
 			"• 🎚 Model — choose quality vs. cost\n"+
+			"• 🔀 Provider — switch between OpenAI and xAI (Grok)\n"+
 			"• 💲 Prices — every model's price on both providers\n"+
-			"• ⚙️ Menu — show your current voice & model\n\n"+
+			"• ⚙️ Menu — show your current provider, voice & model\n\n"+
 			"Every voice message is labeled with the project it came from and its estimated cost.",
 		mainMenuRows())
 }
@@ -179,13 +185,13 @@ func (p *Poller) sendVoices(ctx context.Context) {
 	}
 	p.bot.SendMessage(ctx, "🎙 Listen to each clip, then tap \"✅ Use …\" under the one you want — it becomes my voice for everything I say next.", nil)
 	for _, v := range voices {
-		audio, _, err := p.src.Demo(ctx, v)
+		audio, format, err := p.src.Demo(ctx, v)
 		if err != nil {
 			logging.Error("botcontrol: demo %q: %v", v, err)
 			continue
 		}
 		kb := [][]telegram.InlineButton{{{Text: "✅ Use " + v, CallbackData: "voice:" + v}}}
-		if err := p.bot.SendVoiceWithButton(ctx, audio, "🔊 Voice: "+v, kb); err != nil {
+		if err := p.bot.SendClipWithButton(ctx, audio, format, "🔊 Voice: "+v, kb); err != nil {
 			logging.Error("botcontrol: send demo %q: %v", v, err)
 		}
 	}
@@ -207,6 +213,9 @@ func (p *Poller) handleCallback(ctx context.Context, cq *telegram.CallbackQuery)
 	case "model":
 		err = p.settings.SetModel(val)
 		msg = "Model set to " + val
+	case "provider":
+		err = p.settings.SetProvider(val)
+		msg = "Provider set to " + providerTitle(val) + " — tap 🎙 Voices to pick a voice"
 	default:
 		p.bot.AnswerCallback(ctx, cq.ID, "unrecognized")
 		return
@@ -238,6 +247,15 @@ func modelKeyboard(models []string) [][]telegram.InlineButton {
 			label = l
 		}
 		kb = append(kb, []telegram.InlineButton{{Text: label, CallbackData: "model:" + m}})
+	}
+	return kb
+}
+
+// providerKeyboard offers the switchable cloud providers (OpenAI, Grok).
+func providerKeyboard() [][]telegram.InlineButton {
+	kb := make([][]telegram.InlineButton, 0, len(cost.ProviderOrder))
+	for _, p := range cost.ProviderOrder {
+		kb = append(kb, []telegram.InlineButton{{Text: providerTitle(p), CallbackData: "provider:" + p}})
 	}
 	return kb
 }

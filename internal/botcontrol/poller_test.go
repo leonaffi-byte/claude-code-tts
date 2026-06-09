@@ -31,13 +31,14 @@ func (f *fakeBot) AnswerCallback(ctx context.Context, id, text string) error {
 	f.answers = append(f.answers, text)
 	return nil
 }
-func (f *fakeBot) SendVoiceWithButton(ctx context.Context, audio []byte, caption string, kb [][]telegram.InlineButton) error {
+func (f *fakeBot) SendClipWithButton(ctx context.Context, audio []byte, format, caption string, kb [][]telegram.InlineButton) error {
 	f.voiceDemos = append(f.voiceDemos, caption)
 	return nil
 }
 
 type fakeSource struct{}
 
+func (fakeSource) Provider() string { return "openai" }
 func (fakeSource) Voices() []string { return []string{"alloy", "onyx"} }
 func (fakeSource) Models() []string { return []string{"tts-1", "tts-1-hd"} }
 func (fakeSource) Demo(ctx context.Context, voice string) ([]byte, string, error) {
@@ -104,6 +105,25 @@ func TestPoller_PricesListsBothProviders(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("price list missing %q:\n%s", want, msg)
 		}
+	}
+}
+
+func TestPoller_CallbackSwitchesProvider(t *testing.T) {
+	bot := &fakeBot{}
+	p, ss := newTestPoller(t, bot)
+	_ = ss.SetVoice("alloy") // pre-existing OpenAI voice
+	p.handleUpdate(context.Background(), telegram.Update{
+		CallbackQuery: &telegram.CallbackQuery{ID: "cb", Data: "provider:grok", Message: &telegram.Message{Chat: telegram.Chat{ID: 42}}},
+	})
+	got := ss.Get()
+	if got.Provider != "grok" {
+		t.Errorf("provider = %q, want grok", got.Provider)
+	}
+	if got.Voice != "" {
+		t.Errorf("switching provider must clear the old voice, got %q", got.Voice)
+	}
+	if len(bot.answers) != 1 {
+		t.Errorf("expected an answerCallback")
 	}
 }
 
