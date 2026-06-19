@@ -1,7 +1,7 @@
 {
   "name": "claude-code-tts",
   "version": "1.4.0",
-  "description": "Text-to-Speech MCP server plugin for Claude Code - converts text to speech using OpenAI TTS API",
+  "description": "Text-to-Speech MCP server plugin for Claude Code - converts text to speech using pluggable providers (OpenAI, Grok/xAI, or local Piper), with an optional relay for phone/Telegram delivery",
   "author": "Community",
   "homepage": "https://github.com/ybouhjira/claude-code-tts",
   "repository": "https://github.com/ybouhjira/claude-code-tts",
@@ -28,6 +28,11 @@
       "event": "SessionStart",
       "type": "bash",
       "command": "${CLAUDE_PLUGIN_ROOT}/hooks/relay-start.sh"
+    },
+    {
+      "event": "SessionEnd",
+      "type": "bash",
+      "command": "${CLAUDE_PLUGIN_ROOT}/hooks/relay-stop.sh"
     }
   ]
 }

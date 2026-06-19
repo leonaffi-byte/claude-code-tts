@@ -89,6 +89,23 @@ func TestPiperProvider_Synthesize(t *testing.T) {
 	}
 }
 
+func TestPiperProvider_RejectsPathVoice(t *testing.T) {
+	// A voice containing a path (absolute or with separators) must be rejected
+	// before any model lookup, so Piper can only load models from modelDir.
+	p := NewPiperProvider("piper", t.TempDir())
+	cases := []string{
+		"/etc/passwd",
+		"/abs/model.onnx",
+		"sub/dir/model",
+		"sub" + string(filepath.Separator) + "model",
+	}
+	for _, voice := range cases {
+		if _, err := p.Synthesize(context.Background(), Request{Text: "hi", Voice: voice}); err == nil {
+			t.Errorf("voice %q: expected rejection, got nil error", voice)
+		}
+	}
+}
+
 func TestPiperProvider_Metadata(t *testing.T) {
 	p := NewPiperProvider("piper", "/models")
 	if p.Name() != "piper" || p.DefaultFormat() != "wav" {

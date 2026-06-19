@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func (m *mockTransport) returnStatus(endpoint string, code int) {
 	m.statusByEP[endpoint] = code
 }
 
-func (m *mockTransport) Send(sub PushSubscription, payload []byte) (int, error) {
+func (m *mockTransport) Send(_ context.Context, sub PushSubscription, payload []byte) (int, error) {
 	m.calls = append(m.calls, transportCall{sub: sub, payload: payload})
 	if code, ok := m.statusByEP[sub.Endpoint]; ok {
 		return code, nil
@@ -61,7 +62,7 @@ func pushSub(endpoint string) PushSubscription {
 	var s PushSubscription
 	s.Endpoint = endpoint
 	s.Keys.P256DH = "dGVzdHB1YmxpY2tleQ==" // "testpublickey" base64
-	s.Keys.Auth = "dGVzdGF1dGg="             // "testauth" base64
+	s.Keys.Auth = "dGVzdGF1dGg="           // "testauth" base64
 	return s
 }
 
@@ -80,7 +81,7 @@ func TestPushSender_Send_CallsTransportWithPayloadContainingClipIDAndURL(t *test
 	const clipID = "clip-001"
 	const clipURL = "https://relay.example.com/clips/clip-001"
 
-	if err := sender.Send(clipID, clipURL); err != nil {
+	if err := sender.Send(context.Background(), clipID, clipURL); err != nil {
 		t.Fatalf("Send returned unexpected error: %v", err)
 	}
 
@@ -118,7 +119,7 @@ func TestPushSender_Send_410Response_PrunesSubscription(t *testing.T) {
 	sender.AddSubscription(pushSub(ep))
 
 	// First Send — transport returns 410.
-	_ = sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+	_ = sender.Send(context.Background(), "clip-001", "https://relay.example.com/clips/clip-001")
 
 	// The transport must have been called on the first Send (subscription existed).
 	if transport.callCount(ep) != 1 {
@@ -136,7 +137,7 @@ func TestPushSender_Send_410Response_PrunesSubscription(t *testing.T) {
 
 	// Reset call log and do a second Send — transport must NOT be called again.
 	transport.calls = nil
-	_ = sender.Send("clip-002", "https://relay.example.com/clips/clip-002")
+	_ = sender.Send(context.Background(), "clip-002", "https://relay.example.com/clips/clip-002")
 
 	if transport.callCount(ep) != 0 {
 		t.Errorf("pruned subscription was delivered to on a second Send — expected 0 calls, got %d",
@@ -159,7 +160,7 @@ func TestPushSender_Send_500Response_RetainsSubscription(t *testing.T) {
 	sender := NewPushSender(transport)
 	sender.AddSubscription(pushSub(ep))
 
-	_ = sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+	_ = sender.Send(context.Background(), "clip-001", "https://relay.example.com/clips/clip-001")
 
 	subs := sender.Subscriptions()
 	found := false
@@ -191,7 +192,7 @@ func TestPushSender_Send_410OnFirstSub_PrunesOnlyFirst(t *testing.T) {
 	sender.AddSubscription(pushSub(ep1))
 	sender.AddSubscription(pushSub(ep2))
 
-	_ = sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+	_ = sender.Send(context.Background(), "clip-001", "https://relay.example.com/clips/clip-001")
 
 	// ep2 must still have been called (it received the push).
 	if transport.callCount(ep2) != 1 {
@@ -230,7 +231,7 @@ func TestPushSender_Send_NoSubscriptions_ReturnsNil(t *testing.T) {
 	transport := newMockTransport()
 	sender := NewPushSender(transport)
 
-	err := sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+	err := sender.Send(context.Background(), "clip-001", "https://relay.example.com/clips/clip-001")
 	if err != nil {
 		t.Errorf("Send with no subscriptions returned unexpected error: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestPushSender_AddSubscription_AfterSend_IsIncludedInNextSend(t *testing.T)
 	sender.AddSubscription(pushSub(epFirst))
 
 	// First Send — only epFirst should be called.
-	_ = sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+	_ = sender.Send(context.Background(), "clip-001", "https://relay.example.com/clips/clip-001")
 
 	if transport.callCount(epFirst) != 1 {
 		t.Errorf("first Send: expected 1 call to epFirst, got %d", transport.callCount(epFirst))
@@ -270,7 +271,7 @@ func TestPushSender_AddSubscription_AfterSend_IsIncludedInNextSend(t *testing.T)
 	sender.AddSubscription(pushSub(epLate))
 
 	// Second Send — both subscriptions must be called.
-	_ = sender.Send("clip-002", "https://relay.example.com/clips/clip-002")
+	_ = sender.Send(context.Background(), "clip-002", "https://relay.example.com/clips/clip-002")
 
 	if transport.callCount(epFirst) != 2 {
 		t.Errorf("second Send: expected 2 total calls to epFirst, got %d", transport.callCount(epFirst))
@@ -301,7 +302,7 @@ func TestPushSender_Send_Multiple410s_PrunesAll(t *testing.T) {
 	sender.AddSubscription(pushSub(ep2))
 	sender.AddSubscription(pushSub(ep3))
 
-	_ = sender.Send("clip-001", "https://relay.example.com/clips/clip-001")
+	_ = sender.Send(context.Background(), "clip-001", "https://relay.example.com/clips/clip-001")
 
 	subs := sender.Subscriptions()
 
@@ -335,7 +336,7 @@ type safeMockTransport struct {
 	calls int
 }
 
-func (s *safeMockTransport) Send(_ PushSubscription, _ []byte) (int, error) {
+func (s *safeMockTransport) Send(_ context.Context, _ PushSubscription, _ []byte) (int, error) {
 	s.mu.Lock()
 	s.calls++
 	s.mu.Unlock()
@@ -369,7 +370,7 @@ func TestPushSender_ConcurrentSends_NoDataRace(t *testing.T) {
 			defer wg.Done()
 			// Interleave AddSubscription and Send from multiple goroutines.
 			sender.AddSubscription(pushSub("https://push.example.com/concurrent-" + string(rune('a'+n))))
-			_ = sender.Send("clip-concurrent", "https://relay.example.com/clips/concurrent")
+			_ = sender.Send(context.Background(), "clip-concurrent", "https://relay.example.com/clips/concurrent")
 		}(i)
 	}
 
@@ -381,6 +382,89 @@ func TestPushSender_ConcurrentSends_NoDataRace(t *testing.T) {
 		t.Errorf("expected at least %d transport calls, got %d", goroutines, got)
 	}
 	// If we reach here without the race detector firing, goroutine safety holds.
+}
+
+// ---------------------------------------------------------------------------
+// Test I: AddSubscription de-duplicates by endpoint
+// ---------------------------------------------------------------------------
+
+// TestPushSender_AddSubscription_DeduplicatesByEndpoint verifies that
+// re-subscribing with an endpoint that already exists replaces the stored entry
+// instead of appending a duplicate, so repeat registrations (e.g. PWA
+// reinstalls) do not exhaust the subscription cap.
+func TestPushSender_AddSubscription_DeduplicatesByEndpoint(t *testing.T) {
+	transport := newMockTransport()
+	sender := NewPushSender(transport)
+
+	const ep = "https://push.example.com/dup"
+
+	first := pushSub(ep)
+	first.Keys.Auth = "first-auth"
+	second := pushSub(ep)
+	second.Keys.Auth = "second-auth" // same endpoint, refreshed key material
+
+	if !sender.AddSubscription(first) {
+		t.Fatal("first AddSubscription returned false")
+	}
+	if !sender.AddSubscription(second) {
+		t.Fatal("second AddSubscription (same endpoint) returned false")
+	}
+
+	subs := sender.Subscriptions()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subscription after duplicate add, got %d", len(subs))
+	}
+	if subs[0].Keys.Auth != "second-auth" {
+		t.Errorf("duplicate add did not refresh key material: Auth = %q, want %q", subs[0].Keys.Auth, "second-auth")
+	}
+}
+
+// TestPushSender_AddSubscription_DedupDoesNotExhaustCap verifies that repeated
+// registrations of the same endpoint never trip the cap, even when the cap is
+// small. Distinct endpoints still count toward the cap.
+func TestPushSender_AddSubscription_DedupDoesNotExhaustCap(t *testing.T) {
+	transport := newMockTransport()
+	sender := NewPushSender(transport)
+	sender.maxSubs = 1
+
+	const ep = "https://push.example.com/same"
+	for i := 0; i < 5; i++ {
+		if !sender.AddSubscription(pushSub(ep)) {
+			t.Fatalf("re-subscribe %d with same endpoint was rejected; dedup should keep it at 1", i)
+		}
+	}
+	if got := len(sender.Subscriptions()); got != 1 {
+		t.Fatalf("expected exactly 1 subscription after 5 dup adds, got %d", got)
+	}
+
+	// A different endpoint must now be rejected because the cap (1) is full.
+	if sender.AddSubscription(pushSub("https://push.example.com/other")) {
+		t.Error("expected a distinct endpoint to be rejected once the cap is full")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Send aborts the fan-out when the context is already cancelled
+// ---------------------------------------------------------------------------
+
+// TestPushSender_Send_CancelledContext_AbortsFanout verifies that when the
+// supplied context is already cancelled, Send does not invoke the transport for
+// any subscription — the fan-out is bounded by the context.
+func TestPushSender_Send_CancelledContext_AbortsFanout(t *testing.T) {
+	transport := newMockTransport()
+	sender := NewPushSender(transport)
+	sender.AddSubscription(pushSub("https://push.example.com/a"))
+	sender.AddSubscription(pushSub("https://push.example.com/b"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before calling Send
+
+	if err := sender.Send(ctx, "clip-x", "https://relay.example.com/clips/clip-x"); err != nil {
+		t.Fatalf("Send returned unexpected error: %v", err)
+	}
+	if len(transport.calls) != 0 {
+		t.Errorf("expected 0 transport calls with a cancelled context, got %d", len(transport.calls))
+	}
 }
 
 // ---------------------------------------------------------------------------

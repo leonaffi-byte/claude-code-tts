@@ -88,10 +88,16 @@ func (p *OpenAIProvider) Synthesize(ctx context.Context, req Request) (Audio, er
 	if req.Format == "opus" {
 		outFmt = "opus"
 	}
+	// Default an empty voice (mirrors Grok) so a profile without an explicit
+	// voice doesn't trip a 400 only after a network round-trip.
+	voice := req.Voice
+	if voice == "" {
+		voice = string(VoiceAlloy)
+	}
 	body := openAIRequest{
 		Model:          model,
 		Input:          req.Text,
-		Voice:          req.Voice,
+		Voice:          voice,
 		Speed:          ClampSpeed(req.Speed, 0.25, 4.0),
 		ResponseFormat: outFmt,
 	}
@@ -110,15 +116,18 @@ func (p *OpenAIProvider) Synthesize(ctx context.Context, req Request) (Audio, er
 	if err != nil {
 		return Audio{}, fmt.Errorf("openai: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return Audio{}, fmt.Errorf("openai: API error (status %d): %s", resp.StatusCode, string(errBody))
 	}
-	audio, err := io.ReadAll(resp.Body)
+	audio, err := io.ReadAll(io.LimitReader(resp.Body, maxAudioBytes+1))
 	if err != nil {
 		return Audio{}, fmt.Errorf("openai: read response: %w", err)
+	}
+	if len(audio) > maxAudioBytes {
+		return Audio{}, fmt.Errorf("openai: response exceeds %d byte limit", maxAudioBytes)
 	}
 	return Audio{Data: audio, Format: outFmt}, nil
 }

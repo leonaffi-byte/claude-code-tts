@@ -92,19 +92,29 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 internal/
-├── audio/     # Audio playback (platform-specific)
-├── server/    # MCP server & worker pool
-└── tts/       # OpenAI TTS client
+├── audio/      # Audio playback (platform-specific)
+├── server/     # MCP server & worker pool
+├── tts/        # Provider abstraction: openai.go, grok.go, piper.go, provider.go
+├── relay/      # Ingest/public servers, SSE hub, Web Push/VAPID, QR pairing,
+│               #   token rotation, presence tracking, companion PWA
+├── telegram/   # Telegram Bot API sender (voice / audio)
+├── voicemode/  # Persisted output mode (off/computer/phone/both)
+├── ttsconfig/  # Config + registry (provider/profile resolution)
+└── logging/    # File logging
 
 cmd/
-└── tts-server/  # Main entry point
+├── tts-server/  # MCP server entry point
+├── speak-text/  # Standalone CLI binary
+└── relay/       # Relay server entry point
 ```
 
 ## Testing
 
 - Unit tests go next to the code they test
 - Use table-driven tests where appropriate
-- Mock external services (OpenAI API)
+- Mock external services (OpenAI, Grok, Piper, Telegram, and the Web Push
+  transport). The codebase injects `PushTransport`, `Synthesizer`, and
+  `telegramSender` interfaces precisely so these can be faked in tests.
 
 ```bash
 # Run all tests

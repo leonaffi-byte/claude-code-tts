@@ -222,7 +222,7 @@ func TestWorkerPool_Mode_Off_SkipsEverything(t *testing.T) {
 	wp, player, prov := newModedPool(voicemode.Off, "mp3", &fakeTelegram{}, "")
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { return wp.GetStatus().TotalProcessed == 1 }, "job completed")
 	if n, _, _ := player.snapshot(); n != 0 {
 		t.Errorf("player called %d times in off mode, want 0", n)
@@ -237,7 +237,7 @@ func TestWorkerPool_Mode_Computer_LocalOnly(t *testing.T) {
 	wp, player, _ := newModedPool(voicemode.Computer, "mp3", tg, "")
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 }, "played locally")
 	if tg.count() != 0 {
 		t.Errorf("telegram called in computer mode")
@@ -249,7 +249,7 @@ func TestWorkerPool_Mode_Phone_TelegramOnly(t *testing.T) {
 	wp, player, _ := newModedPool(voicemode.Phone, "mp3", tg, "")
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { return tg.count() == 1 }, "sent to telegram")
 	if n, _, _ := player.snapshot(); n != 0 {
 		t.Errorf("player called in phone mode")
@@ -264,7 +264,7 @@ func TestWorkerPool_Mode_Both(t *testing.T) {
 	wp, player, _ := newModedPool(voicemode.Both, "mp3", tg, "")
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 && tg.count() == 1 }, "played + sent")
 	if f := wp.GetStatus().TotalFailed; f != 0 {
 		t.Errorf("both-mode job should succeed, TotalFailed=%d", f)
@@ -276,7 +276,7 @@ func TestWorkerPool_Mode_Both_TelegramErrorStillPlaysLocal(t *testing.T) {
 	wp, player, _ := newModedPool(voicemode.Both, "mp3", tg, "")
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { n, _, _ := player.snapshot(); return n == 1 }, "played locally despite telegram error")
 	if wp.GetStatus().TotalFailed != 0 {
 		t.Errorf("both-mode job should not fail when local playback works")
@@ -288,22 +288,216 @@ func TestWorkerPool_Mode_Phone_TelegramErrorFails(t *testing.T) {
 	wp, _, _ := newModedPool(voicemode.Phone, "mp3", tg, "")
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "phone-only job failed")
 }
 
 func TestWorkerPool_Mode_Phone_NotConfiguredFails(t *testing.T) {
 	wp, _, _ := newModedPool(voicemode.Phone, "mp3", nil, "set $TELEGRAM_BOT_TOKEN")
+	// A pool with no sender wired must report telegram as not configured.
+	if wp.GetStatus().TelegramConfigured {
+		t.Fatal("TelegramConfigured = true, want false when no sender is wired")
+	}
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "failed: telegram not configured")
+}
+
+// TestWorkerPool_WithTelegram_TypedNilNormalized guards the typed-nil interface
+// trap: a (*fakeTelegram)(nil) wrapped in the telegramSender interface must be
+// normalized to a real nil so the "telegram not configured" guarantee holds and
+// a Phone-mode job fails fast instead of dereferencing a nil sender.
+func TestWorkerPool_WithTelegram_TypedNilNormalized(t *testing.T) {
+	var typedNil *fakeTelegram // nil pointer, non-nil interface when passed directly
+	prov := &fakeProvider{format: "mp3"}
+	wp := NewWorkerPool(fakeResolver{prov: prov}, &fakePlayer{}, 1, 4).
+		WithMode(fakeMode{m: voicemode.Phone}).
+		WithTelegram(typedNil, "typed-nil sender")
+
+	if wp.GetStatus().TelegramConfigured {
+		t.Fatal("TelegramConfigured = true for a typed-nil sender; normalization failed")
+	}
+
+	wp.Start()
+	defer wp.Stop()
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "failed: typed-nil telegram treated as not configured")
 }
 
 func TestWorkerPool_Mode_Phone_NonMP3Fails(t *testing.T) {
 	wp, _, _ := newModedPool(voicemode.Phone, "wav", &fakeTelegram{}, "")
 	wp.Start()
 	defer wp.Stop()
-	wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
+	_, _ = wp.Submit(SpeakRequest{Text: "hi", Profile: "default"})
 	waitFor(t, func() bool { return wp.GetStatus().TotalFailed == 1 }, "failed: telegram needs mp3")
+}
+
+// --- shutdown / concurrency tests ---
+
+// TestWorkerPool_StopIsIdempotent verifies repeated Stop() calls (and a Stop
+// after Server.Shutdown) do not panic with "close of closed channel".
+func TestWorkerPool_StopIsIdempotent(t *testing.T) {
+	wp := NewWorkerPool(okResolver("mp3"), &fakePlayer{}, 2, 10)
+	wp.Start()
+	wp.Stop()
+	wp.Stop() // second call must be a safe no-op
+	wp.Stop() // and a third, for good measure
+}
+
+// TestWorkerPool_SubmitAfterStopReturnsError verifies Submit after shutdown
+// returns a clean error instead of panicking with "send on closed channel".
+func TestWorkerPool_SubmitAfterStopReturnsError(t *testing.T) {
+	wp := NewWorkerPool(okResolver("mp3"), &fakePlayer{}, 2, 10)
+	wp.Start()
+	wp.Stop()
+
+	job, err := wp.Submit(SpeakRequest{Text: "late", Profile: "default"})
+	if err == nil {
+		t.Fatal("expected error submitting after Stop, got nil")
+	}
+	if job == nil || job.Status != "failed" {
+		t.Fatalf("expected failed job, got %+v", job)
+	}
+}
+
+// TestWorkerPool_ConcurrentSubmitDuringStop hammers Submit from many goroutines
+// while Stop() runs concurrently. It must never panic on a closed channel; every
+// Submit must either succeed or return a clean error. Run with -race.
+func TestWorkerPool_ConcurrentSubmitDuringStop(t *testing.T) {
+	wp := NewWorkerPool(okResolver("mp3"), &fakePlayer{}, 2, 100)
+	wp.Start()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// A panic here (send on closed channel) would crash the test process.
+			_, _ = wp.Submit(SpeakRequest{Text: "x", Profile: "default"})
+		}()
+	}
+	wp.Stop()
+	wg.Wait()
+}
+
+// TestWorkerPool_StopDrainsQueuedJobs verifies graceful shutdown actually drains
+// already-accepted jobs rather than dropping them. Jobs are buffered while the
+// pool is paused (workers gate on pause before dequeuing), then on resume+Stop
+// every buffered job must be processed.
+func TestWorkerPool_StopDrainsQueuedJobs(t *testing.T) {
+	player := &fakePlayer{}
+	wp := NewWorkerPool(okResolver("mp3"), player, 1, 20)
+	wp.Pause() // workers park before dequeuing, so submits buffer in the channel
+	wp.Start()
+
+	const n = 10
+	for i := 0; i < n; i++ {
+		if _, err := wp.Submit(SpeakRequest{Text: "t", Profile: "default"}); err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+	}
+	// Nothing processed yet because the pool is paused.
+	if got := wp.GetStatus().TotalProcessed; got != 0 {
+		t.Fatalf("processed %d while paused, want 0", got)
+	}
+
+	wp.Resume()
+	// Stop must drain all buffered jobs before returning. waitFor first to avoid
+	// the narrow pause-loop/shutdown race (a worker still parked in the 100ms
+	// pause sleep when Stop closes shutdown would exit early by design); once
+	// unpaused workers are draining, Stop blocks on wg.Wait until they finish.
+	waitFor(t, func() bool { return wp.GetStatus().TotalProcessed == n }, "all buffered jobs drained")
+	wp.Stop()
+
+	if got := wp.GetStatus().TotalProcessed; got != n {
+		t.Errorf("processed %d after drain, want %d (jobs were dropped)", got, n)
+	}
+	if calls, _, _ := player.snapshot(); calls != n {
+		t.Errorf("player called %d times, want %d", calls, n)
+	}
+}
+
+// blockingPlayer blocks the first Play call until released, so a worker can be
+// held mid-job while more jobs buffer in the queue.
+type blockingPlayer struct {
+	mu      sync.Mutex
+	calls   int
+	gate    chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newBlockingPlayer() *blockingPlayer {
+	return &blockingPlayer{gate: make(chan struct{}), entered: make(chan struct{})}
+}
+func (p *blockingPlayer) Play(_ []byte, _ string) error {
+	p.once.Do(func() { close(p.entered); <-p.gate })
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	return nil
+}
+func (p *blockingPlayer) IsPlaying() bool { return false }
+func (p *blockingPlayer) count() int      { p.mu.Lock(); defer p.mu.Unlock(); return p.calls }
+
+// TestWorkerPool_StopDrainsWhileWorkerBusy verifies that Stop() called while a
+// worker is mid-job still drains the jobs that buffered behind it, rather than
+// the worker taking a shutdown branch and abandoning the queue.
+func TestWorkerPool_StopDrainsWhileWorkerBusy(t *testing.T) {
+	player := newBlockingPlayer()
+	wp := NewWorkerPool(okResolver("mp3"), player, 1, 20)
+	wp.Start()
+
+	const n = 6
+	for i := 0; i < n; i++ {
+		if _, err := wp.Submit(SpeakRequest{Text: "t", Profile: "default"}); err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+	}
+	<-player.entered // the single worker is now blocked inside Play on job 0
+
+	// Stop concurrently while the worker is busy and 5 jobs are buffered.
+	done := make(chan struct{})
+	go func() { wp.Stop(); close(done) }()
+
+	close(player.gate) // release the worker; it must now drain the remaining jobs
+
+	<-done
+	if got := player.count(); got != n {
+		t.Errorf("player processed %d jobs, want %d (buffered jobs dropped on Stop)", got, n)
+	}
+	if got := wp.GetStatus().TotalProcessed; got != n {
+		t.Errorf("TotalProcessed = %d, want %d", got, n)
+	}
+}
+
+// TestWorkerPool_PausedLeavesJobsInQueue verifies the pause-before-dequeue gate:
+// a paused pool leaves submitted jobs in the channel where QueuePending and
+// Clear() can see them, rather than a worker parking with a job already pulled.
+func TestWorkerPool_PausedLeavesJobsInQueue(t *testing.T) {
+	wp := NewWorkerPool(okResolver("mp3"), &fakePlayer{}, 2, 20)
+	wp.Pause()
+	wp.Start()
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		if _, err := wp.Submit(SpeakRequest{Text: "t", Profile: "default"}); err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+	}
+	// Give the parked workers a chance to (incorrectly) dequeue if the gate were
+	// after the receive; the count must stay at n.
+	waitFor(t, func() bool { return wp.GetStatus().QueuePending == n }, "all jobs visible as pending while paused")
+
+	cleared := wp.Clear()
+	if cleared != n {
+		t.Errorf("Clear() reclaimed %d jobs, want %d (paused jobs not reclaimable)", cleared, n)
+	}
+	if got := wp.GetStatus().QueuePending; got != 0 {
+		t.Errorf("QueuePending = %d after Clear, want 0", got)
+	}
+
+	wp.Resume()
+	wp.Stop()
 }

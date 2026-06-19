@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -77,6 +78,14 @@ type WorkerPool struct {
 	paused         atomic.Bool
 	wg             sync.WaitGroup
 	shutdown       chan struct{}
+
+	// submitMu serializes Submit's send against Stop's close(jobs). Submit holds
+	// it for reading while sending on jobs; Stop holds it for writing while
+	// flipping closed and closing the channel, so a send can never race a close
+	// (which would panic with "send on closed channel").
+	submitMu sync.RWMutex
+	closed   bool      // set true under submitMu once the pool is shutting down
+	stopOnce sync.Once // makes Stop idempotent (close-of-closed-channel safe)
 }
 
 // NewWorkerPool creates a pool backed by the given resolver and player.
@@ -97,10 +106,33 @@ func (wp *WorkerPool) WithMode(m modeReader) *WorkerPool { wp.mode = m; return w
 
 // WithTelegram sets the Telegram sender (may be nil). reason explains why it is
 // unavailable when the sender is nil, for user-facing error messages.
+//
+// A typed-nil pointer wrapped in the telegramSender interface (e.g.
+// (*telegram.Sender)(nil)) is normalized to a true nil interface so the
+// downstream `wp.telegram == nil` misconfiguration check fires. This guards
+// against a caller wiring a typed-nil sender and accidentally defeating the
+// "fail fast when Telegram is unavailable" guarantee.
 func (wp *WorkerPool) WithTelegram(s telegramSender, reason string) *WorkerPool {
+	if isNilSender(s) {
+		s = nil
+	}
 	wp.telegram = s
 	wp.telegramReason = reason
 	return wp
+}
+
+// isNilSender reports whether s is a true nil interface or a typed-nil pointer
+// wrapped in the interface.
+func isNilSender(s telegramSender) bool {
+	if s == nil {
+		return true
+	}
+	v := reflect.ValueOf(s)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return v.IsNil()
+	}
+	return false
 }
 
 // Start launches the worker goroutines
@@ -112,11 +144,22 @@ func (wp *WorkerPool) Start() {
 	logging.Info("Started %d TTS workers with queue size %d", wp.workerCount, wp.queueSize)
 }
 
-// Stop gracefully shuts down the worker pool
+// Stop gracefully shuts down the worker pool. Already-queued jobs are drained
+// and processed before the workers exit (unless the pool is paused, in which
+// case parked workers exit and leave their jobs in the queue). Stop is
+// idempotent: repeated calls are safe no-ops.
 func (wp *WorkerPool) Stop() {
-	logging.Info("Stopping worker pool...")
-	close(wp.shutdown)
-	close(wp.jobs)
+	wp.stopOnce.Do(func() {
+		logging.Info("Stopping worker pool...")
+		// Take the write lock so no Submit can be mid-send when we close jobs.
+		// Closing jobs lets workers drain buffered items and then observe ok=false;
+		// closing shutdown wakes any worker parked in the pause loop.
+		wp.submitMu.Lock()
+		wp.closed = true
+		close(wp.shutdown)
+		close(wp.jobs)
+		wp.submitMu.Unlock()
+	})
 	wp.wg.Wait()
 	logging.Info("Worker pool stopped (processed=%d, failed=%d)", wp.processed.Load(), wp.failed.Load())
 }
@@ -127,28 +170,30 @@ func (wp *WorkerPool) worker(id int) {
 	logging.Debug("Worker %d started", id)
 
 	for {
-		select {
-		case <-wp.shutdown:
-			logging.Debug("Worker %d shutting down", id)
-			return
-		case job, ok := <-wp.jobs:
-			if !ok {
-				logging.Debug("Worker %d: jobs channel closed", id)
+		// Gate on pause BEFORE dequeuing so a paused worker leaves jobs in the
+		// queue where Clear() and the QueuePending count can still see them,
+		// rather than parking with a job already pulled out of the channel.
+		for wp.paused.Load() {
+			select {
+			case <-wp.shutdown:
+				logging.Debug("Worker %d: shutdown while paused", id)
 				return
+			case <-time.After(100 * time.Millisecond):
+				// Continue checking pause status.
 			}
-			// Check if paused, wait until resumed
-			for wp.paused.Load() {
-				select {
-				case <-wp.shutdown:
-					logging.Debug("Worker %d: shutdown while paused", id)
-					return
-				case <-time.After(100 * time.Millisecond):
-					// Continue checking pause status
-				}
-			}
-			logging.Debug("Worker %d processing job %s", id, job.ID)
-			wp.processJob(job)
 		}
+
+		// Blocking receive: drain all buffered jobs until Stop() closes the
+		// channel (ok=false). This is what makes shutdown actually graceful —
+		// already-accepted jobs are processed rather than dropped. Stop() also
+		// closes wp.shutdown to wake a worker parked in the pause loop above.
+		job, ok := <-wp.jobs
+		if !ok {
+			logging.Debug("Worker %d: jobs channel closed", id)
+			return
+		}
+		logging.Debug("Worker %d processing job %s", id, job.ID)
+		wp.processJob(job)
 	}
 }
 
@@ -202,14 +247,23 @@ func (wp *WorkerPool) processJob(job *Job) {
 	// Fail fast on Telegram misconfiguration before paying for synthesis.
 	if mode.SendsTelegram() {
 		if wp.telegram == nil {
-			wp.failJob(job, fmt.Errorf("Telegram not configured: %s", wp.telegramReason), startTime)
+			wp.failJob(job, fmt.Errorf("telegram not configured: %s", wp.telegramReason), startTime)
 			return
 		}
 		if provider.DefaultFormat() != "mp3" {
-			wp.failJob(job, fmt.Errorf("Telegram requires an MP3 provider (OpenAI or Grok); %q emits %s", provider.Name(), provider.DefaultFormat()), startTime)
+			wp.failJob(job, fmt.Errorf("telegram requires an MP3 provider (OpenAI or Grok); %q emits %s", provider.Name(), provider.DefaultFormat()), startTime)
 			return
 		}
 	}
+
+	// NOTE (supersedes the 2026-06-08 spec/plan): the original design listed the
+	// Opus/sendVoice voice bubble as a non-goal and described a single synthesis
+	// feeding both delivery paths. The shipped behavior intentionally diverges:
+	// Telegram receives an Opus voice message and local playback uses the
+	// provider's default format (MP3/WAV). Because those formats differ, "both"
+	// mode synthesizes TWICE — once below for Telegram and once for local
+	// playback — which roughly doubles TTS cost/latency for "both" mode. This is
+	// deliberate; the older spec/plan/README cost notes are stale on this point.
 
 	// Telegram delivery: request Opus so it arrives as a voice message (the
 	// provider falls back to its default format if it can't emit Opus, in which
@@ -279,6 +333,21 @@ func (wp *WorkerPool) Submit(sr SpeakRequest) (*Job, error) {
 		wp.jobHistory = wp.jobHistory[1:]
 	}
 	wp.historyMu.Unlock()
+
+	// Hold submitMu for reading across the send so Stop() cannot close wp.jobs
+	// concurrently (a send on a closed channel is "ready" in a select and panics
+	// even when a default case is present). The closed flag turns a send-after-
+	// shutdown into a clean error instead of a crash.
+	wp.submitMu.RLock()
+	defer wp.submitMu.RUnlock()
+
+	if wp.closed {
+		job.mu.Lock()
+		job.Status = "failed"
+		job.Error = "pool shutting down"
+		job.mu.Unlock()
+		return job, fmt.Errorf("worker pool is shutting down")
+	}
 
 	select {
 	case wp.jobs <- job:
@@ -373,7 +442,13 @@ func (wp *WorkerPool) Clear() int {
 	cleared := 0
 	for {
 		select {
-		case job := <-wp.jobs:
+		case job, ok := <-wp.jobs:
+			// After Stop() closes wp.jobs, a receive yields (nil, false)
+			// immediately; bail out rather than spinning on a nil job.
+			if !ok {
+				logging.Info("Cleared %d pending jobs from queue", cleared)
+				return cleared
+			}
 			job.mu.Lock()
 			job.Status = "cancelled"
 			job.Error = "queue cleared"

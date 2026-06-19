@@ -74,11 +74,9 @@ func TestHandler_PostIngest_SuppressesPush_WhenLiveListenerPresent(t *testing.T)
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
 
-	// Push must be suppressed when a live listener is present.
-	if len(ps.sendCalls) != 0 {
-		t.Errorf("push Send called %d time(s); want 0 — push must be suppressed when a live listener is connected",
-			len(ps.sendCalls))
-	}
+	// Push must be suppressed when a live listener is present. Settle briefly to
+	// confirm no detached Send goroutine was dispatched.
+	ps.assertNoSendCallsSettle(t)
 }
 
 // TestHandler_PostIngest_SendsPush_WhenNoLiveListener verifies the
@@ -103,11 +101,8 @@ func TestHandler_PostIngest_SendsPush_WhenNoLiveListener(t *testing.T) {
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
 
-	// Push must be sent when there is no live listener.
-	if len(ps.sendCalls) != 1 {
-		t.Errorf("push Send called %d time(s); want 1 — push must be sent when no live listener is connected",
-			len(ps.sendCalls))
-	}
+	// Push must be sent when there is no live listener (Send runs async).
+	ps.waitForSendCalls(t, 1)
 }
 
 // TestHandler_PostIngest_NoDoubleDelivery_ListenerConnected verifies the "no
@@ -151,11 +146,9 @@ func TestHandler_PostIngest_NoDoubleDelivery_ListenerConnected(t *testing.T) {
 		t.Error("no SSE broadcast received — SSE delivery must still happen when listener is present")
 	}
 
-	// Push must NOT have been sent (no double delivery).
-	if len(ps.sendCalls) != 0 {
-		t.Errorf("push was sent %d time(s) alongside SSE broadcast — double delivery detected; want 0 push calls",
-			len(ps.sendCalls))
-	}
+	// Push must NOT have been sent (no double delivery). Settle to confirm no
+	// detached Send goroutine fires.
+	ps.assertNoSendCallsSettle(t)
 }
 
 // TestHandler_PostIngest_NilPresenceTracker_DefaultsToPushEnabled verifies
@@ -179,10 +172,7 @@ func TestHandler_PostIngest_NilPresenceTracker_DefaultsToPushEnabled(t *testing.
 	}
 
 	// Without a presence tracker, push must still be sent (legacy behaviour).
-	if len(ps.sendCalls) != 1 {
-		t.Errorf("push Send called %d time(s) with nil PresenceTracker; want 1 — nil tracker must not suppress push",
-			len(ps.sendCalls))
-	}
+	ps.waitForSendCalls(t, 1)
 }
 
 // TestHandler_PostIngest_PresenceTransition_PushSentAfterListenerLeaves
@@ -208,11 +198,8 @@ func TestHandler_PostIngest_PresenceTransition_PushSentAfterListenerLeaves(t *te
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
 
-	// Presence tracker reports no live listener → push must be sent.
-	if len(ps.sendCalls) != 1 {
-		t.Errorf("push Send called %d time(s) after listener left; want 1",
-			len(ps.sendCalls))
-	}
+	// Presence tracker reports no live listener → push must be sent (async).
+	ps.waitForSendCalls(t, 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -280,8 +267,12 @@ func TestHandler_PostIngest_PresenceSuppression_TableDriven(t *testing.T) {
 			}
 
 			if tc.hasPushSender {
-				if got := len(ps.sendCalls); got != tc.wantPushCalls {
-					t.Errorf("push Send calls = %d, want %d", got, tc.wantPushCalls)
+				// Send runs on a detached goroutine. For a positive expectation
+				// poll until it fires; for zero, settle to confirm it never does.
+				if tc.wantPushCalls > 0 {
+					ps.waitForSendCalls(t, tc.wantPushCalls)
+				} else {
+					ps.assertNoSendCallsSettle(t)
 				}
 			}
 		})

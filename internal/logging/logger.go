@@ -98,7 +98,7 @@ func (l *Logger) rotate() error {
 		return nil
 	}
 
-	l.file.Close()
+	l.file.Close() //nolint:errcheck
 	backupPath := l.filePath + "." + time.Now().Format("2006-01-02-150405")
 	os.Rename(l.filePath, backupPath) //nolint:errcheck
 
@@ -121,7 +121,7 @@ func (l *Logger) cleanupOldLogs() {
 		return
 	}
 	for i := 0; i < len(matches)-5; i++ {
-		os.Remove(matches[i])
+		os.Remove(matches[i]) //nolint:errcheck
 	}
 }
 
@@ -148,7 +148,7 @@ func (l *Logger) Close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.file != nil {
-		l.file.Close()
+		l.file.Close() //nolint:errcheck
 	}
 }
 

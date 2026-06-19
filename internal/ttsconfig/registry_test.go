@@ -82,6 +82,50 @@ func TestRegistry_DefaultWithEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestRegistry_DefaultInvalidSpeedDroppedOnProfilePath(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	t.Setenv("CLAUDE_TTS_SPEED", "fast") // not a float -> ignored
+	reg, _ := NewRegistry(testConfig())
+	_, req, err := reg.Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	// Profile speed (1.1) must be preserved when the override is invalid.
+	if req.Speed != 1.1 {
+		t.Errorf("invalid speed override changed profile speed: got %v, want 1.1", req.Speed)
+	}
+}
+
+func TestRegistry_DefaultInvalidSpeedDroppedOnProviderPath(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai-k")
+	t.Setenv("CLAUDE_TTS_PROVIDER", "grok")
+	t.Setenv("CLAUDE_TTS_SPEED", "1,2") // comma -> not a float -> ignored
+	reg, _ := NewRegistry(testConfig())
+	_, req, err := reg.Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	// Speed stays 0 (provider default) when the override is invalid.
+	if req.Speed != 0 {
+		t.Errorf("invalid speed override applied on provider path: got %v, want 0", req.Speed)
+	}
+}
+
+func TestRegistry_DefaultModelOverrideOnProviderPath(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-k")
+	t.Setenv("XAI_API_KEY", "xai-k")
+	t.Setenv("CLAUDE_TTS_PROVIDER", "openai")
+	t.Setenv("CLAUDE_TTS_MODEL", "tts-1-hd")
+	reg, _ := NewRegistry(testConfig())
+	_, req, err := reg.Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if req.Model != "tts-1-hd" {
+		t.Errorf("model override not applied: got %q, want tts-1-hd", req.Model)
+	}
+}
+
 func TestRegistry_ResolveVoice(t *testing.T) {
 	t.Setenv("XAI_API_KEY", "xai-k")
 	reg, _ := NewRegistry(testConfig())

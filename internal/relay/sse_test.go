@@ -156,9 +156,9 @@ func TestSSEHub_ConcurrentSubscribeBroadcast(t *testing.T) {
 	hub := NewSSEHub()
 
 	var (
-		wg    sync.WaitGroup
-		mu    sync.Mutex
-		got   []string
+		wg  sync.WaitGroup
+		mu  sync.Mutex
+		got []string
 	)
 
 	// Subscriber goroutine: subscribes and collects one message.
@@ -181,7 +181,18 @@ func TestSSEHub_ConcurrentSubscribeBroadcast(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	hub.Broadcast("new-clip", `{"id":"race"}`)
 	wg.Wait()
-	// No assertion on got — the test verifies absence of data races / panics.
+
+	// Concrete post-condition (in addition to -race): the subscriber goroutine
+	// cancels on exit, so the hub must be empty, and at most one message may
+	// have been collected (zero if the broadcast raced ahead of the subscribe).
+	if c := hub.Count(); c != 0 {
+		t.Errorf("expected 0 subscribers after the goroutine cancelled, got %d", c)
+	}
+	mu.Lock()
+	if len(got) > 1 {
+		t.Errorf("collected %d messages; a single subscriber+broadcast can yield at most 1", len(got))
+	}
+	mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +300,13 @@ func TestSSEHub_ConcurrentMultipleBroadcasts(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	// No assertion — the test verifies absence of data races / panics.
+
+	// Concrete post-condition (in addition to -race): all subscribers remain
+	// connected (they are cancelled only by the deferred cleanup), so the count
+	// must still equal numSubscribers after the concurrent broadcasts.
+	if got := hub.Count(); got != numSubscribers {
+		t.Errorf("expected %d subscribers after concurrent broadcasts, got %d", numSubscribers, got)
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ type concurrentMockPushSender struct {
 
 func (c *concurrentMockPushSender) AddSubscription(_ PushSubscription) bool { return true }
 
-func (c *concurrentMockPushSender) Send(_, _ string) error {
+func (c *concurrentMockPushSender) Send(_ context.Context, _, _ string) error {
 	c.mu.Lock()
 	c.calls++
 	c.mu.Unlock()
@@ -72,14 +73,38 @@ func (c *concurrentMockPushSender) Count() int {
 // ---------------------------------------------------------------------------
 
 type errPushSender struct {
-	sendCalls int
+	mu        sync.Mutex
+	callCount int
 }
 
 func (e *errPushSender) AddSubscription(_ PushSubscription) bool { return true }
 
-func (e *errPushSender) Send(_, _ string) error {
-	e.sendCalls++
+func (e *errPushSender) Send(_ context.Context, _, _ string) error {
+	e.mu.Lock()
+	e.callCount++
+	e.mu.Unlock()
 	return errors.New("push service unavailable")
+}
+
+// count returns the number of recorded Send calls.
+func (e *errPushSender) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.callCount
+}
+
+// waitForCount polls until the recorded Send count reaches n or fails. Send
+// runs on a detached goroutine, so callers must wait rather than read directly.
+func (e *errPushSender) waitForCount(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if e.count() == n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %d push call(s), got %d", n, e.count())
 }
 
 // ---------------------------------------------------------------------------
@@ -138,9 +163,9 @@ func TestHandler_PostIngest_RealSSEHub_WithSubscriber_SuppressesPush(t *testing.
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
-	if len(ps.sendCalls) != 0 {
+	if got := ps.sendCallCount(); got != 0 {
 		t.Errorf("push Send called %d time(s) with a real SSE subscriber; want 0 — double delivery via real hub",
-			len(ps.sendCalls))
+			got)
 	}
 }
 
@@ -164,9 +189,7 @@ func TestHandler_PostIngest_RealSSEHub_NoSubscriber_SendsPush(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
-	if len(ps.sendCalls) != 1 {
-		t.Errorf("push Send called %d time(s) with no SSE subscriber; want 1", len(ps.sendCalls))
-	}
+	ps.waitForSendCalls(t, 1) // Send runs on a detached goroutine.
 }
 
 // ---------------------------------------------------------------------------
@@ -197,8 +220,8 @@ func TestHandler_PostIngest_RealSSEHub_ExactlyOneListener_ThenCancel_PushResumes
 	if w1.Code != http.StatusOK {
 		t.Fatalf("ingest 1: expected 200, got %d", w1.Code)
 	}
-	if len(ps.sendCalls) != 0 {
-		t.Errorf("ingest 1: push called %d time(s) with exactly 1 listener; want 0", len(ps.sendCalls))
+	if got := ps.sendCallCount(); got != 0 {
+		t.Errorf("ingest 1: push called %d time(s) with exactly 1 listener; want 0", got)
 	}
 
 	// === Cancel the single subscriber — hub count drops to 0 ===
@@ -213,9 +236,7 @@ func TestHandler_PostIngest_RealSSEHub_ExactlyOneListener_ThenCancel_PushResumes
 	if w2.Code != http.StatusOK {
 		t.Fatalf("ingest 2: expected 200, got %d", w2.Code)
 	}
-	if len(ps.sendCalls) != 1 {
-		t.Errorf("ingest 2: push called %d time(s) after listener cancelled; want 1", len(ps.sendCalls))
-	}
+	ps.waitForSendCalls(t, 1) // Send runs on a detached goroutine.
 }
 
 // TestHandler_PostIngest_RealSSEHub_ZeroListeners_PushSentEveryTime verifies
@@ -237,9 +258,7 @@ func TestHandler_PostIngest_RealSSEHub_ZeroListeners_PushSentEveryTime(t *testin
 			t.Fatalf("ingest %d: expected 200, got %d", i, w.Code)
 		}
 	}
-	if len(ps.sendCalls) != 3 {
-		t.Errorf("push Send called %d time(s) for 3 ingests with 0 listeners; want 3", len(ps.sendCalls))
-	}
+	ps.waitForSendCalls(t, 3) // each Send runs on a detached goroutine.
 }
 
 // ---------------------------------------------------------------------------
@@ -282,9 +301,7 @@ func TestHandler_PostIngest_RapidSubscribeUnsubscribe_NoListener_SendsPush(t *te
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST /ingest: expected 200, got %d", w.Code)
 	}
-	if len(ps.sendCalls) != 1 {
-		t.Errorf("push Send called %d time(s) after rapid churn with 0 listeners; want 1", len(ps.sendCalls))
-	}
+	ps.waitForSendCalls(t, 1) // Send runs on a detached goroutine.
 }
 
 // ---------------------------------------------------------------------------
@@ -310,9 +327,9 @@ func TestHandler_PostIngest_PushSenderError_StillReturns200(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("POST /ingest: expected 200 even when push fails, got %d", w.Code)
 	}
-	if ps.sendCalls != 1 {
-		t.Errorf("expected push Send to be called once despite error, got %d", ps.sendCalls)
-	}
+	// Send runs on a detached goroutine; wait for it to be invoked despite the
+	// error it returns (errors are logged, never surfaced to the ingest caller).
+	ps.waitForCount(t, 1)
 }
 
 // TestHandler_PostIngest_PushSenderError_WithListener_SuppressedNotSentAtAll
@@ -336,8 +353,11 @@ func TestHandler_PostIngest_PushSenderError_WithListener_SuppressedNotSentAtAll(
 	if w.Code != http.StatusOK {
 		t.Errorf("POST /ingest: expected 200, got %d", w.Code)
 	}
-	if ps.sendCalls != 0 {
-		t.Errorf("errPushSender was called %d time(s) despite suppression; want 0", ps.sendCalls)
+	// Suppressed: Send must never be dispatched. Settle briefly to be sure no
+	// detached goroutine fires.
+	time.Sleep(50 * time.Millisecond)
+	if got := ps.count(); got != 0 {
+		t.Errorf("errPushSender was called %d time(s) despite suppression; want 0", got)
 	}
 }
 
@@ -409,6 +429,11 @@ func TestHandler_PostIngest_ConcurrentIngests_ListenerChurn_NoRace(t *testing.T)
 	}
 	persistentMu.Unlock()
 
+	// Push Send now runs on detached goroutines; let any in-flight dispatches
+	// settle so the race detector observes the full lifecycle and no goroutine
+	// touches the mock after the test returns. Count() is mutex-guarded.
+	time.Sleep(50 * time.Millisecond)
+
 	// Test passes if the -race detector is silent and no panic occurred.
 	_ = concPS.Count()
 }
@@ -465,6 +490,10 @@ drain:
 		}
 	}
 
+	// Settle to let any (erroneously) dispatched detached Send goroutine run
+	// before asserting suppression held.
+	time.Sleep(50 * time.Millisecond)
+
 	// Push must never have been called — the listener was present for all ingests.
 	if got := ps.Count(); got != 0 {
 		t.Errorf("double delivery: push Send called %d time(s) while a live listener was always connected; want 0", got)
@@ -501,8 +530,8 @@ func TestHandler_PostIngest_PresenceTrackerConsultedPerIngest(t *testing.T) {
 	if w1.Code != http.StatusOK {
 		t.Fatalf("ingest 1: expected 200, got %d", w1.Code)
 	}
-	if len(ps.sendCalls) != 0 {
-		t.Errorf("ingest 1: push called %d time(s); want 0 (listener present)", len(ps.sendCalls))
+	if got := ps.sendCallCount(); got != 0 {
+		t.Errorf("ingest 1: push called %d time(s); want 0 (listener present)", got)
 	}
 
 	// Flip presence state — listener has gone away.
@@ -514,7 +543,5 @@ func TestHandler_PostIngest_PresenceTrackerConsultedPerIngest(t *testing.T) {
 	if w2.Code != http.StatusOK {
 		t.Fatalf("ingest 2: expected 200, got %d", w2.Code)
 	}
-	if len(ps.sendCalls) != 1 {
-		t.Errorf("ingest 2: push called %d time(s); want 1 (no listener)", len(ps.sendCalls))
-	}
+	ps.waitForSendCalls(t, 1) // Send runs on a detached goroutine.
 }

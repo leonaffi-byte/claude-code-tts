@@ -66,6 +66,49 @@ func TestStore_GetInvalidContent(t *testing.T) {
 	}
 }
 
+func TestStatePath_ExpandsLeadingTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)        // honored by os.UserHomeDir on unix
+	t.Setenv("USERPROFILE", home) // honored by os.UserHomeDir on windows
+	t.Setenv("CLAUDE_TTS_STATE", "~/sub/state.json")
+
+	got := statePath()
+	want := filepath.Join(home, "sub", "state.json")
+	if got != want {
+		t.Errorf("statePath() = %q, want %q", got, want)
+	}
+}
+
+func TestStatePath_TildeRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CLAUDE_TTS_STATE", "~/state.json")
+
+	s := DefaultStore()
+	if err := s.Set(Phone); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// File must land under the expanded home, not a literal "~" directory.
+	if _, err := os.Stat(filepath.Join(home, "state.json")); err != nil {
+		t.Fatalf("expected state.json under home: %v", err)
+	}
+	if got := s.Get(); got != Phone {
+		t.Errorf("got %q, want phone", got)
+	}
+}
+
+func TestExpandHome_NonTildePathsUnchanged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, p := range []string{"", "~", "/abs/path", "relative/path", "~user/x"} {
+		if got := expandHome(p); got != p {
+			t.Errorf("expandHome(%q) = %q, want unchanged", p, got)
+		}
+	}
+}
+
 func writeFileHelper(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
