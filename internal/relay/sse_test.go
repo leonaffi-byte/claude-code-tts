@@ -156,9 +156,9 @@ func TestSSEHub_ConcurrentSubscribeBroadcast(t *testing.T) {
 	hub := NewSSEHub()
 
 	var (
-		wg    sync.WaitGroup
-		mu    sync.Mutex
-		got   []string
+		wg  sync.WaitGroup
+		mu  sync.Mutex
+		got []string
 	)
 
 	// Subscriber goroutine: subscribes and collects one message.

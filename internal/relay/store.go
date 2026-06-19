@@ -70,4 +70,3 @@ func (s *ClipStore) Close() error {
 	s.order = nil
 	return nil
 }
-

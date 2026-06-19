@@ -792,4 +792,3 @@ func TestCompanionHandler_PostPushSubscribe_CapReached_Returns429(t *testing.T) 
 		t.Errorf("expected 429 when cap reached, got %d", w.Code)
 	}
 }
-

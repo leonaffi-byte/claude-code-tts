@@ -61,7 +61,7 @@ func pushSub(endpoint string) PushSubscription {
 	var s PushSubscription
 	s.Endpoint = endpoint
 	s.Keys.P256DH = "dGVzdHB1YmxpY2tleQ==" // "testpublickey" base64
-	s.Keys.Auth = "dGVzdGF1dGg="             // "testauth" base64
+	s.Keys.Auth = "dGVzdGF1dGg="           // "testauth" base64
 	return s
 }
 
