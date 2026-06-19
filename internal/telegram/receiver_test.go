@@ -15,7 +15,7 @@ func TestGetUpdates_ParsesMessages(t *testing.T) {
 		if !strings.Contains(r.URL.Path, "/getUpdates") {
 			t.Errorf("path = %s", r.URL.Path)
 		}
-		io.WriteString(w, `{"ok":true,"result":[
+		_, _ = io.WriteString(w, `{"ok":true,"result":[
 			{"update_id":10,"message":{"chat":{"id":42},"text":"hello"}},
 			{"update_id":11,"message":{"chat":{"id":42},"voice":{"file_id":"AwAC123"}}}
 		]}`)
@@ -42,9 +42,9 @@ func TestDownloadVoice_GetFileThenDownload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/getFile"):
-			io.WriteString(w, `{"ok":true,"result":{"file_path":"voice/file_1.oga"}}`)
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"file_path":"voice/file_1.oga"}}`)
 		case strings.Contains(r.URL.Path, "/file/bot"):
-			io.WriteString(w, "OGG-BYTES")
+			_, _ = io.WriteString(w, "OGG-BYTES")
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
