@@ -11,9 +11,17 @@ jobs:
     name: Build & Test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         go-version: ['1.23']
+
+    # Run every step under bash on all OSes. The Windows runner otherwise uses
+    # PowerShell, which mangles `go test -coverprofile=coverage.out ./...` (it
+    # passes `.out` to go as a package and the test step fails).
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout code
