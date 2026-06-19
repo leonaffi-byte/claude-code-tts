@@ -47,9 +47,36 @@ func runStatus() {
 	}
 }
 
+// applyOverrides applies the -voice and -speed CLI overrides to a request that
+// was resolved via a profile (or the default selection). The -voice override is
+// validated against the provider's voice list so an invalid voice fails locally
+// with a clear message instead of being sent to the remote API. Providers with
+// no fixed voice list (e.g. Piper) accept arbitrary voices and skip the check.
+func applyOverrides(req *tts.Request, prov tts.Provider, voice string, speed float64) error {
+	if voice != "" {
+		if voices := prov.Voices(); len(voices) > 0 && !contains(voices, voice) {
+			return fmt.Errorf("voice %q is not valid for provider %q (valid: %v)", voice, prov.Name(), voices)
+		}
+		req.Voice = voice
+	}
+	if speed != 0 {
+		req.Speed = speed
+	}
+	return nil
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 func runSpeak(args []string) {
 	fs := flag.NewFlagSet("speak-text", flag.ExitOnError)
-	to := fs.String("to", "computer", "Where to deliver THIS clip: computer, phone, or both")
+	to := fs.String("to", "", "Where to deliver THIS clip: computer, phone, or both (default: saved voice mode)")
 	providerFlag := fs.String("provider", "", "Use an explicit provider (openai, grok, piper) instead of a profile")
 	profile := fs.String("profile", "", "Voice profile from config (default: configured default / CLAUDE_TTS_* env)")
 	voice := fs.String("voice", "", "Override the profile's voice")
@@ -68,10 +95,32 @@ func runSpeak(args []string) {
 	}
 	text := fs.Arg(0)
 
-	dest := voicemode.Mode(*to)
-	if dest != voicemode.Computer && dest != voicemode.Phone && dest != voicemode.Both {
-		fmt.Fprintf(os.Stderr, "Error: -to must be computer, phone, or both\n")
-		os.Exit(1)
+	// Determine whether -to was explicitly passed. When it was not, fall back to
+	// the saved voice mode (voicemode.DefaultStore().Get()) so the CLI honors a
+	// previously set `speak-text mode ...`, matching the MCP/worker path. -to is
+	// documented as a one-off override that does NOT change the saved mode and,
+	// per the README, accepts only computer/phone/both (not off).
+	toSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "to" {
+			toSet = true
+		}
+	})
+
+	var dest voicemode.Mode
+	if toSet {
+		dest = voicemode.Mode(*to)
+		if dest != voicemode.Computer && dest != voicemode.Phone && dest != voicemode.Both {
+			fmt.Fprintf(os.Stderr, "Error: -to must be computer, phone, or both\n")
+			os.Exit(1)
+		}
+	} else {
+		dest = voicemode.DefaultStore().Get()
+		// Off: honor the saved mode by producing no audio (no synthesis cost,
+		// no delivery), mirroring the worker's `off` handling.
+		if dest == voicemode.Off {
+			return
+		}
 	}
 
 	reg := ttsconfig.LoadOrDefault()
@@ -81,18 +130,21 @@ func runSpeak(args []string) {
 	var err error
 	switch {
 	case *providerFlag != "":
+		// ResolveVoice validates *voice against the provider's voice list, so the
+		// resolved request already carries a vetted voice.
 		prov, req, err = reg.ResolveVoice(*providerFlag, *voice, *speed)
+		if err == nil && *speed != 0 {
+			req.Speed = *speed
+		}
 	case *profile != "":
 		prov, req, err = reg.Resolve(*profile)
+		if err == nil {
+			err = applyOverrides(&req, prov, *voice, *speed)
+		}
 	default:
 		prov, req, err = reg.Default()
-	}
-	if err == nil {
-		if *voice != "" {
-			req.Voice = *voice
-		}
-		if *speed != 0 {
-			req.Speed = *speed
+		if err == nil {
+			err = applyOverrides(&req, prov, *voice, *speed)
 		}
 	}
 	if err != nil {

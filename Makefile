@@ -7,6 +7,8 @@ RELAY_BINARY_NAME=tts-relay
 INSTALL_DIR=$(HOME)/.claude/plugins/claude-code-tts
 GO=go
 GOFLAGS=-ldflags="-s -w"
+# Pinned linter version for reproducible lint results (keep in sync with ci.yml)
+GOLANGCI_VERSION=v1.61.0
 
 # Default target
 all: build
@@ -88,7 +90,7 @@ test-coverage:
 ## lint: Run linter
 lint:
 	@echo "Running linter..."
-	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	@which golangci-lint > /dev/null || (echo "Installing golangci-lint $(GOLANGCI_VERSION)..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_VERSION))
 	golangci-lint run ./...
 
 ## fmt: Format code

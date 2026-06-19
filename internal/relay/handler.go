@@ -1,12 +1,19 @@
 package relay
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 )
+
+// pushFanoutTimeout bounds the detached push fan-out dispatched after an ingest.
+// The work runs on its own goroutine with this deadline so the /ingest HTTP
+// response is never coupled to push-service latency.
+const pushFanoutTimeout = 30 * time.Second
 
 // Handler wires an HTTP mux for the relay endpoints.
 // It depends on a Synthesizer, ClipStore, SSEHub, and optional TokenStore, all
@@ -133,9 +140,18 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 			if h.clipBaseURL != "" {
 				clipURL = h.clipBaseURL + "/clips/" + id
 			}
-			if sendErr := h.pushSender.Send(id, clipURL); sendErr != nil {
-				logging.Error("push send failed: %v", sendErr)
-			}
+			// Dispatch the fan-out on a detached goroutine carrying its own
+			// deadline so the /ingest response returns immediately and is never
+			// coupled to push-service latency. r.Context() would be cancelled as
+			// soon as this response is written, so it must not be used here.
+			ps := h.pushSender
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), pushFanoutTimeout)
+				defer cancel()
+				if sendErr := ps.Send(ctx, id, clipURL); sendErr != nil {
+					logging.Error("push send failed: %v", sendErr)
+				}
+			}()
 		}
 	}
 
