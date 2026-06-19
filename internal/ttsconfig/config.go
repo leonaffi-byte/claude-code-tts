@@ -119,6 +119,9 @@ func configPath() string {
 	return filepath.Join(home, ".claude", "plugins", "claude-code-tts", "config.json")
 }
 
+// LoadConfigOrDefault reads the config file, returning DefaultConfig() when absent.
+func LoadConfigOrDefault() (*Config, error) { return loadConfig() }
+
 // loadConfig reads the config file, falling back to DefaultConfig when it is absent.
 // A present-but-malformed file is an error.
 func loadConfig() (*Config, error) {

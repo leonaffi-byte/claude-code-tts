@@ -4,6 +4,7 @@
 BINARY_NAME=tts-server
 CLI_BINARY_NAME=speak-text
 RELAY_BINARY_NAME=tts-relay
+RUN_BINARY_NAME=claude-run
 INSTALL_DIR=$(HOME)/.claude/plugins/claude-code-tts
 GO=go
 GOFLAGS=-ldflags="-s -w"
@@ -23,6 +24,9 @@ build:
 	@echo "Building $(RELAY_BINARY_NAME)..."
 	$(GO) build $(GOFLAGS) -o bin/$(RELAY_BINARY_NAME) ./cmd/relay
 	@echo "Built bin/$(RELAY_BINARY_NAME)"
+	@echo "Building $(RUN_BINARY_NAME)..."
+	$(GO) build $(GOFLAGS) -o bin/$(RUN_BINARY_NAME) ./cmd/claude-run
+	@echo "Built bin/$(RUN_BINARY_NAME)"
 
 ## relay: Build only the relay binary
 relay:
