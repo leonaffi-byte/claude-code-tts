@@ -33,8 +33,10 @@ go.work
 *.temp
 *.mp3
 
-# Local MCP config (user-specific)
-.mcp.json
+# NOTE: .mcp.json is intentionally tracked (not ignored). It uses
+# ${CLAUDE_PLUGIN_ROOT}/${OPENAI_API_KEY} placeholders, so it is not
+# user-specific, and `make install` copies it from the clone — ignoring it
+# would break a fresh-clone install once it ever became untracked.
 
 # Debug logs
 firebase-debug.log

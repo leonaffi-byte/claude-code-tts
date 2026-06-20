@@ -1,15 +1,34 @@
 package relay
 
 import (
+	"bytes"
+	"crypto/rand"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
 )
+
+// cspNoncePlaceholder is the token in the embedded companion HTML that is
+// replaced per-response with a fresh CSP nonce so the inline <script> can run
+// under script-src 'self' 'nonce-…' without enabling 'unsafe-inline'.
+const cspNoncePlaceholder = "__CSP_NONCE__"
+
+// sseHeartbeatInterval controls how often a comment frame is written on an idle
+// SSE connection. A failed write detects a silently-dropped peer (e.g. a phone
+// that slept or a NAT idle timeout) so the goroutine returns and the hub
+// subscriber slot is released. Without this, a half-open connection produces no
+// write between broadcasts, r.Context() is never cancelled, and the slot leaks.
+//
+// It is a package variable (not a const) so tests can shorten it.
+var sseHeartbeatInterval = 20 * time.Second
 
 //go:embed web/companion.html
 var companionHTML []byte
@@ -79,12 +98,34 @@ func (h *CompanionHandler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate a per-response nonce so the inline <script> can run under a strict
+	// CSP without 'unsafe-inline'. An attacker who injects markup cannot guess
+	// the nonce, so injected inline scripts will not execute.
+	nonce, err := newCSPNonce()
+	if err != nil {
+		logging.Error("companion: failed to generate CSP nonce: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	body := bytes.ReplaceAll(companionHTML, []byte(cspNoncePlaceholder), []byte(nonce))
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy",
+		fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s'", nonce))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(http.StatusOK)
-	w.Write(companionHTML) //nolint:errcheck
+	w.Write(body) //nolint:errcheck
+}
+
+// newCSPNonce returns a base64-encoded 128-bit random nonce suitable for a
+// Content-Security-Policy script-src 'nonce-…' source expression.
+func newCSPNonce() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
 }
 
 // handleEvents streams SSE new-clip events to the client until the client
@@ -115,13 +156,27 @@ func (h *CompanionHandler) handleEvents(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// Periodic heartbeat: writing a comment frame forces a TCP write so a
+	// silently-dropped peer surfaces as a write error, letting us return and
+	// free the subscriber slot via the deferred cancel().
+	ticker := time.NewTicker(sseHeartbeatInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case msg, ok := <-ch:
 			if !ok {
 				return
 			}
-			fmt.Fprint(w, msg) //nolint:errcheck
+			if _, err := fmt.Fprint(w, msg); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-ticker.C:
+			// SSE comment frame — ignored by clients, but detects dead peers.
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		case <-r.Context().Done():
 			return
@@ -194,12 +249,64 @@ func (h *CompanionHandler) handlePushSubscribe(w http.ResponseWriter, r *http.Re
 		http.Error(w, "endpoint must be an https URL", http.StatusBadRequest)
 		return
 	}
+	// Defence-in-depth against SSRF: reject endpoints that resolve to internal
+	// hosts (loopback, RFC1918 private, link-local / cloud metadata) so a
+	// registrant cannot make the relay POST to an internal service. IP-literal
+	// hosts are rejected outright since legitimate push services use DNS names.
+	if err := validatePublicHost(u.Hostname()); err != nil {
+		http.Error(w, "endpoint host is not allowed", http.StatusBadRequest)
+		return
+	}
 
 	if !h.pushSender.AddSubscription(sub) {
 		http.Error(w, "subscription limit reached", http.StatusTooManyRequests)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+// lookupIP resolves a hostname to its IP addresses. It is a package variable so
+// tests can stub DNS resolution and stay hermetic (offline-deterministic).
+var lookupIP = net.LookupIP
+
+// validatePublicHost rejects an endpoint host that would let the relay reach an
+// internal network (SSRF). It refuses bare IP-literal hosts (legitimate push
+// services use DNS names) and resolves DNS names, rejecting any host that maps
+// to a loopback, private, or link-local/metadata address.
+func validatePublicHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("empty host")
+	}
+	// Reject IP-literal hosts outright — real push services use hostnames, and
+	// an IP literal is the classic way to point straight at an internal target
+	// (e.g. 127.0.0.1, ::1, 169.254.169.254).
+	if ip := net.ParseIP(host); ip != nil {
+		return fmt.Errorf("ip-literal host not allowed")
+	}
+	addrs, err := lookupIP(host)
+	if err != nil {
+		return fmt.Errorf("resolve %q: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("host %q resolved to no addresses", host)
+	}
+	for _, ip := range addrs {
+		if isInternalIP(ip) {
+			return fmt.Errorf("host %q resolves to internal address %s", host, ip)
+		}
+	}
+	return nil
+}
+
+// isInternalIP reports whether ip is loopback, private (RFC1918 / ULA),
+// link-local (incl. the 169.254.169.254 cloud metadata range), or otherwise
+// non-routable on the public internet.
+func isInternalIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
 }
 
 // handleVAPIDPublicKey processes GET /push/vapid-public-key: returns the VAPID

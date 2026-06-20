@@ -73,6 +73,26 @@ func TestOpenAIProvider_Synthesize(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_Synthesize_DefaultsEmptyVoice(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("FAKEMP3"))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAIProvider("sk-test", "tts-1")
+	p.baseURL = srv.URL
+	if _, err := p.Synthesize(context.Background(), Request{Text: "hi", Voice: ""}); err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	if gotBody["voice"] != "alloy" {
+		t.Errorf("voice = %v, want alloy (defaulted)", gotBody["voice"])
+	}
+}
+
 func TestOpenAIProvider_Synthesize_APIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -84,6 +104,25 @@ func TestOpenAIProvider_Synthesize_APIError(t *testing.T) {
 	p.baseURL = srv.URL
 	if _, err := p.Synthesize(context.Background(), Request{Text: "x", Voice: "alloy"}); err == nil {
 		t.Fatal("expected error on 401, got nil")
+	}
+}
+
+func TestOpenAIProvider_Synthesize_RejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		chunk := make([]byte, 1<<20)
+		for written := 0; written <= maxAudioBytes; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	p := NewOpenAIProvider("sk-test", "tts-1")
+	p.baseURL = srv.URL
+	if _, err := p.Synthesize(context.Background(), Request{Text: "x", Voice: "alloy"}); err == nil {
+		t.Fatal("expected error for oversized response body, got nil")
 	}
 }
 

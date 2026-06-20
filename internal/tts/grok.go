@@ -84,15 +84,18 @@ func (p *GrokProvider) Synthesize(ctx context.Context, req Request) (Audio, erro
 	if err != nil {
 		return Audio{}, fmt.Errorf("grok: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return Audio{}, fmt.Errorf("grok: API error (status %d): %s", resp.StatusCode, string(errBody))
 	}
-	audio, err := io.ReadAll(resp.Body)
+	audio, err := io.ReadAll(io.LimitReader(resp.Body, maxAudioBytes+1))
 	if err != nil {
 		return Audio{}, fmt.Errorf("grok: read response: %w", err)
+	}
+	if len(audio) > maxAudioBytes {
+		return Audio{}, fmt.Errorf("grok: response exceeds %d byte limit", maxAudioBytes)
 	}
 	return Audio{Data: audio, Format: "mp3"}, nil
 }

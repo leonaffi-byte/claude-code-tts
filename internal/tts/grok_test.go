@@ -63,6 +63,25 @@ func TestGrokProvider_Synthesize_APIError(t *testing.T) {
 	}
 }
 
+func TestGrokProvider_Synthesize_RejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		chunk := make([]byte, 1<<20)
+		for written := 0; written <= maxAudioBytes; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	p := NewGrokProvider("xai-test", "en")
+	p.baseURL = srv.URL
+	if _, err := p.Synthesize(context.Background(), Request{Text: "x", Voice: "eve"}); err == nil {
+		t.Fatal("expected error for oversized response body, got nil")
+	}
+}
+
 func TestGrokProvider_Metadata(t *testing.T) {
 	p := NewGrokProvider("k", "")
 	if p.Name() != "grok" || p.DefaultFormat() != "mp3" {

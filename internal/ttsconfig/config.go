@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ProviderConfig is per-provider configuration from the config file.
@@ -107,10 +108,12 @@ func DefaultConfig() *Config {
 	}
 }
 
-// configPath returns CLAUDE_TTS_CONFIG or the default plugin location.
+// configPath returns CLAUDE_TTS_CONFIG or the default plugin location. A
+// leading "~/" in CLAUDE_TTS_CONFIG is expanded to the user's home directory so
+// the env var honors the same shortcut used elsewhere in the codebase.
 func configPath() string {
 	if p := os.Getenv("CLAUDE_TTS_CONFIG"); p != "" {
-		return p
+		return expandHome(p)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -121,6 +124,18 @@ func configPath() string {
 
 // LoadConfigOrDefault reads the config file, returning DefaultConfig() when absent.
 func LoadConfigOrDefault() (*Config, error) { return loadConfig() }
+
+// expandHome expands a leading "~/" to the user's home directory. Other paths
+// (including a bare "~") are returned unchanged. It mirrors the helper used by
+// the Piper provider so "~" is honored consistently for all path inputs.
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
 
 // loadConfig reads the config file, falling back to DefaultConfig when it is absent.
 // A present-but-malformed file is an error.

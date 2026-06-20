@@ -1,10 +1,13 @@
 package relay
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -324,5 +327,150 @@ func TestAuthMiddleware_NestedPath_ForwardsCorrectly(t *testing.T) {
 	}
 	if inner.seenPath != "/foo/bar" {
 		t.Errorf("inner handler saw path %q, want %q", inner.seenPath, "/foo/bar")
+	}
+}
+
+// TestAuthMiddleware_RepeatedFailures_SameIP_EventuallyThrottled verifies the
+// per-IP defence-in-depth rate limiter: after a burst of failed (wrong-token)
+// attempts from a single client IP the middleware starts returning 429 instead
+// of 404, throttling unauthenticated request flooding.
+func TestAuthMiddleware_RepeatedFailures_SameIP_EventuallyThrottled(t *testing.T) {
+	inner := &handlerSpy{}
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, "correct-token"), inner)
+
+	throttled := false
+	// Burst is authFailureBurst (20); send comfortably more to spend the bucket.
+	for i := 0; i < authFailureBurst+10; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/wrong-token/events", nil)
+		req.RemoteAddr = "203.0.113.7:5555" // same IP for every attempt
+		w := httptest.NewRecorder()
+		mw.ServeHTTP(w, req)
+		switch w.Code {
+		case http.StatusNotFound:
+			// allowed-but-rejected attempt
+		case http.StatusTooManyRequests:
+			throttled = true
+		default:
+			t.Fatalf("attempt %d: unexpected status %d", i, w.Code)
+		}
+	}
+	if !throttled {
+		t.Errorf("expected repeated failures from one IP to be throttled with 429 after %d attempts", authFailureBurst)
+	}
+	if inner.called {
+		t.Error("inner handler must never be called for wrong-token attempts")
+	}
+}
+
+// TestAuthMiddleware_ValidTokenNotThrottled verifies that the failure limiter
+// never blocks legitimate requests: a client presenting the correct token is
+// always forwarded with 200, regardless of how many requests it makes.
+func TestAuthMiddleware_ValidTokenNotThrottled(t *testing.T) {
+	const token = "correct-token"
+	inner := &handlerSpy{}
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, token), inner)
+
+	for i := 0; i < authFailureBurst+50; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/"+token+"/events", nil)
+		req.RemoteAddr = "203.0.113.8:5555"
+		w := httptest.NewRecorder()
+		mw.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("valid-token attempt %d: expected 200, got %d", i, w.Code)
+		}
+	}
+}
+
+// TestAuthMiddleware_FailureThrottleIsPerIP verifies that throttling one abusive
+// IP does not affect a different client IP.
+func TestAuthMiddleware_FailureThrottleIsPerIP(t *testing.T) {
+	mw := NewAuthMiddleware(tokenStoreWithValue(t, "correct-token"), &handlerSpy{})
+
+	// Exhaust the bucket for the abusive IP.
+	for i := 0; i < authFailureBurst+10; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/wrong/events", nil)
+		req.RemoteAddr = "203.0.113.9:1111"
+		mw.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	// A different IP making its first failed attempt must get a clean 404, not 429.
+	req := httptest.NewRequest(http.MethodGet, "/wrong/events", nil)
+	req.RemoteAddr = "203.0.113.10:2222"
+	w := httptest.NewRecorder()
+	mw.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("fresh IP: expected 404 (not throttled by another IP), got %d", w.Code)
+	}
+}
+
+// okHandler is a minimal inner handler that always returns 200. Unlike
+// handlerSpy it is goroutine-safe (no shared mutable state) for use in the
+// concurrent rotation test.
+type okHandler struct{}
+
+func (okHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
+
+// TestAuthMiddleware_ConcurrentRotateVsAuthRead verifies the security-critical
+// concurrent path: while one goroutine hammers Rotate(), many goroutines call
+// ServeHTTP using the current token. Every response must be a clean 200
+// (matched the live token) or 404 (the token rotated out from under it) — never
+// a panic or torn read. Run under -race. (Each request uses a distinct client
+// IP so the per-IP failure rate limiter never trips and responses stay strictly
+// 200/404.)
+func TestAuthMiddleware_ConcurrentRotateVsAuthRead(t *testing.T) {
+	dir := t.TempDir()
+	ts := NewTokenStore(filepath.Join(dir, "token"))
+	if _, err := ts.LoadOrGenerate(); err != nil {
+		t.Fatalf("LoadOrGenerate: %v", err)
+	}
+	mw := NewAuthMiddleware(ts, okHandler{})
+
+	var (
+		readersWG sync.WaitGroup
+		rotatorWG sync.WaitGroup
+		stop      atomic.Bool
+		ipSeq     atomic.Int64
+		badCodes  atomic.Int64
+	)
+
+	// Rotator goroutine: continuously rotate the token until stop is set.
+	rotatorWG.Add(1)
+	go func() {
+		defer rotatorWG.Done()
+		for !stop.Load() {
+			if _, err := ts.Rotate(); err != nil {
+				t.Errorf("Rotate failed: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Reader goroutines: repeatedly authenticate with the (possibly stale) token.
+	const readers = 8
+	const perReader = 200
+	for range readers {
+		readersWG.Add(1)
+		go func() {
+			defer readersWG.Done()
+			for i := 0; i < perReader; i++ {
+				token := ts.Current() // may be stale by the time the request runs
+				req := httptest.NewRequest(http.MethodGet, "/"+token+"/events", nil)
+				// Unique client IP per request so the failure limiter never trips.
+				req.RemoteAddr = fmt.Sprintf("198.51.100.%d:1234", ipSeq.Add(1)%250+1)
+				w := httptest.NewRecorder()
+				mw.ServeHTTP(w, req)
+				if w.Code != http.StatusOK && w.Code != http.StatusNotFound {
+					badCodes.Add(1)
+				}
+			}
+		}()
+	}
+
+	readersWG.Wait()
+	stop.Store(true)
+	rotatorWG.Wait()
+
+	if n := badCodes.Load(); n != 0 {
+		t.Errorf("got %d response(s) that were neither 200 nor 404 during concurrent rotation", n)
 	}
 }

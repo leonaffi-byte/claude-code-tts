@@ -17,6 +17,13 @@ type Audio struct {
 	Format string // "mp3" | "wav" | "opus"
 }
 
+// maxAudioBytes bounds how much of an HTTP success response a provider will
+// read into memory. The endpoints are trusted first-party HTTPS APIs, so this
+// is defensive hardening rather than a strict limit: a generous-but-finite
+// ceiling that prevents a misbehaving or proxied endpoint from streaming an
+// unbounded body into a single []byte.
+const maxAudioBytes = 25 << 20 // 25 MiB
+
 // Provider converts text to speech.
 type Provider interface {
 	Name() string

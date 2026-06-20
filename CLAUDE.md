@@ -37,6 +37,11 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │    Entry point - loads ttsconfig.Registry, creates server   │
 │    (no hard OPENAI_API_KEY requirement; keys per-provider)  │
 │                                                             │
+│  cmd/relay/main.go                                          │
+│    Relay entry point - ingest server on 127.0.0.1:8765      │
+│    (RELAY_PORT), public server on 0.0.0.0:8766 (PUBLIC_PORT)│
+│    Started/stopped by the SessionStart/SessionEnd hooks     │
+│                                                             │
 │  internal/server/                                           │
 │    server.go: MCP server setup, tool registration           │
 │      - speak(text, profile, provider, voice, speed)         │
@@ -70,9 +75,21 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │      state.json (overridable via CLAUDE_TTS_STATE)          │
 │                                                             │
 │  internal/telegram/                                         │
-│    telegram.go: Sender.SendAudio(ctx, []byte, caption)      │
-│      — posts MP3 to Telegram Bot API (sendAudio); token     │
-│      redacted from all error messages                       │
+│    telegram.go: Sender.Send(ctx, audio, format, caption)    │
+│      — primary API the worker calls; format=="opus" sends   │
+│      a voice message (sendVoice), otherwise a tappable       │
+│      audio file (sendAudio). SendAudio(ctx, []byte, caption) │
+│      is a legacy MP3-only wrapper. Token redacted from all   │
+│      error messages                                          │
+│                                                             │
+│  internal/relay/                                            │
+│    Ingest (loopback) + public (0.0.0.0) HTTP servers, SSE   │
+│    hub, Web Push/VAPID, QR pairing, token rotation,         │
+│    presence tracking, and the companion PWA handler.        │
+│    Phone delivery without Telegram; requires OpenAI/Grok    │
+│                                                             │
+│  internal/logging/                                          │
+│    File logging used by the relay (logging.Init/Info/...)   │
 │                                                             │
 │  internal/audio/                                            │
 │    player.go: Cross-platform, format-aware audio playback   │

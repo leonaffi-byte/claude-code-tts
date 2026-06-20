@@ -453,11 +453,10 @@ func TestHandler_PostIngest_CallsPushSenderWithNewClipID(t *testing.T) {
 		t.Fatal("response JSON has no 'id' field")
 	}
 
-	if len(ps.sendCalls) != 1 {
-		t.Fatalf("expected 1 push Send call, got %d", len(ps.sendCalls))
-	}
-	if ps.sendCalls[0].clipID != id {
-		t.Errorf("push Send called with clipID %q, want %q", ps.sendCalls[0].clipID, id)
+	// Send runs on a detached goroutine; wait for it before inspecting the call.
+	ps.waitForSendCalls(t, 1)
+	if got := ps.sendCall(0).clipID; got != id {
+		t.Errorf("push Send called with clipID %q, want %q", got, id)
 	}
 }
 
@@ -496,12 +495,11 @@ func TestHandler_PostIngest_ClipURLInPushPayload_StartsWithBaseURL(t *testing.T)
 		t.Fatal("response JSON has no 'id' field")
 	}
 
-	if len(ps.sendCalls) != 1 {
-		t.Fatalf("expected 1 push Send call, got %d", len(ps.sendCalls))
-	}
+	// Send runs on a detached goroutine; wait for it before inspecting the call.
+	ps.waitForSendCalls(t, 1)
 
 	wantURL := baseURL + "/clips/" + id
-	gotURL := ps.sendCalls[0].clipURL
+	gotURL := ps.sendCall(0).clipURL
 	if gotURL != wantURL {
 		t.Errorf("push clipURL = %q, want %q", gotURL, wantURL)
 	}

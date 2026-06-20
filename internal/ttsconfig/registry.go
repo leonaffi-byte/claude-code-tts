@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/ybouhjira/claude-code-tts/internal/logging"
 	"github.com/ybouhjira/claude-code-tts/internal/telegram"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
@@ -76,6 +77,9 @@ func (r *Registry) Resolve(profile string) (tts.Provider, tts.Request, error) {
 	if voices := prov.Voices(); len(voices) > 0 && pr.Voice != "" && !contains(voices, pr.Voice) {
 		return nil, tts.Request{}, fmt.Errorf("ttsconfig: voice %q is not valid for provider %q (valid: %v)", pr.Voice, pr.Provider, voices)
 	}
+	if pr.Model != "" {
+		noteModelOverride(prov, pr.Model)
+	}
 	return prov, tts.Request{Voice: pr.Voice, Speed: pr.Speed, Model: pr.Model}, nil
 }
 
@@ -107,18 +111,14 @@ func (r *Registry) ResolveVoice(provider, voice string, speed float64) (tts.Prov
 // resolution; otherwise the default profile is used with field overrides.
 func (r *Registry) Default() (tts.Provider, tts.Request, error) {
 	if pv := os.Getenv("CLAUDE_TTS_PROVIDER"); pv != "" {
-		var speed float64
-		if s := os.Getenv("CLAUDE_TTS_SPEED"); s != "" {
-			if f, err := strconv.ParseFloat(s, 64); err == nil {
-				speed = f
-			}
-		}
+		speed, _ := speedOverride() // 0 (provider default) when unset/invalid
 		prov, req, err := r.ResolveVoice(pv, os.Getenv("CLAUDE_TTS_VOICE"), speed)
 		if err != nil {
 			return nil, tts.Request{}, err
 		}
 		if m := os.Getenv("CLAUDE_TTS_MODEL"); m != "" {
 			req.Model = m
+			noteModelOverride(prov, m)
 		}
 		return prov, req, nil
 	}
@@ -136,13 +136,39 @@ func (r *Registry) Default() (tts.Provider, tts.Request, error) {
 	}
 	if m := os.Getenv("CLAUDE_TTS_MODEL"); m != "" {
 		req.Model = m
+		noteModelOverride(prov, m)
 	}
-	if s := os.Getenv("CLAUDE_TTS_SPEED"); s != "" {
-		if f, perr := strconv.ParseFloat(s, 64); perr == nil {
-			req.Speed = f
-		}
+	if f, ok := speedOverride(); ok {
+		req.Speed = f
 	}
 	return prov, req, nil
+}
+
+// speedOverride parses CLAUDE_TTS_SPEED. It returns (value, true) on success.
+// When the variable is unset it returns (0, false); when it is set but not a
+// valid float it logs a warning and returns (0, false) so the override is
+// observably dropped rather than silently ignored.
+func speedOverride() (float64, bool) {
+	s := os.Getenv("CLAUDE_TTS_SPEED")
+	if s == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		logging.Warn("ignoring invalid CLAUDE_TTS_SPEED=%q: %v", s, err)
+		return 0, false
+	}
+	return f, true
+}
+
+// noteModelOverride logs a debug note when a model override (from CLAUDE_TTS_MODEL
+// or a config profile's "model") is requested for a provider that ignores it.
+// Only the OpenAI provider reads Request.Model; Grok and Piper ignore it, so the
+// override is a no-op for them.
+func noteModelOverride(prov tts.Provider, model string) {
+	if prov != nil && prov.Name() != "openai" {
+		logging.Debug("model override %q ignored: provider %q does not support a model override (OpenAI only)", model, prov.Name())
+	}
 }
 
 // TelegramSender builds a Telegram sender from config + env, or returns

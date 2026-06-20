@@ -77,7 +77,7 @@ func (s *Sender) sendFile(ctx context.Context, method, field, filename string, d
 	if err != nil {
 		return fmt.Errorf("telegram: request failed: %s", s.redact(err.Error()))
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("telegram: API error (status %d): %s", resp.StatusCode, s.redact(string(b)))

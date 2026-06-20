@@ -36,8 +36,9 @@ make install
 
 ## Requirements
 
-- **Go 1.21+** (for building from source)
+- **Go 1.23+** (for building from source)
 - **OpenAI API Key** with TTS access
+- **`jq`** (required by the automatic Stop hook — `auto-speak.sh` uses it to parse and build its JSON payload)
 - **Audio Player**:
   - macOS: `afplay` (built-in)
   - Linux: `mpv`, `ffplay`, or `mpg123`
@@ -126,6 +127,15 @@ When `CLAUDE_TTS_PROVIDER` is set it takes priority and `CLAUDE_TTS_PROFILE` is 
 
 ## Architecture
 
+There are two distinct data paths:
+
+1. **MCP `speak` tool path** — Claude Code calls the in-process worker pool, which
+   synthesizes via the selected provider and plays locally (and/or sends to Telegram).
+2. **Auto-speak Stop-hook path** — the `auto-speak.sh` Stop hook POSTs the first
+   sentence to the relay's `/ingest` endpoint; the relay synthesizes and fans the
+   audio out to the local machine and/or a paired phone. This path does **not** go
+   through the in-process worker pool.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Claude Code                              │
@@ -136,7 +146,7 @@ When `CLAUDE_TTS_PROVIDER` is set it takes priority and `CLAUDE_TTS_PROFILE` is 
 │  │              TTS MCP Server (Go)                     │    │
 │  │  ┌─────────────────────────────────────────────┐    │    │
 │  │  │              Tool Handlers                   │    │    │
-│  │  │   speak(text, voice)  │  tts_status()       │    │    │
+│  │  │   speak(...)  │  tts_status()  │  tts_output │    │    │
 │  │  └─────────────┬─────────┴─────────────────────┘    │    │
 │  │                │                                     │    │
 │  │  ┌─────────────▼─────────────────────────────┐      │    │
@@ -151,18 +161,59 @@ When `CLAUDE_TTS_PROVIDER` is set it takes priority and `CLAUDE_TTS_PROFILE` is 
 │  │  └────────────────────────────│──────────────┘      │    │
 │  │                               │                      │    │
 │  │  ┌────────────────────────────▼──────────────────┐  │    │
-│  │  │              OpenAI TTS API                    │  │    │
-│  │  │         POST /v1/audio/speech                  │  │    │
-│  │  │         Model: tts-1                           │  │    │
+│  │  │       TTS Provider (tts.Provider interface)    │  │    │
+│  │  │   OpenAI (/v1/audio/speech) │ Grok │ Piper     │  │    │
 │  │  └───────────────────┬────────────────────────────┘  │    │
 │  │                      │                               │    │
 │  │  ┌───────────────────▼────────────────────────────┐  │    │
-│  │  │         Audio Player (Mutex Protected)          │  │    │
+│  │  │   Audio Player (local) │ Telegram (phone)       │  │    │
 │  │  │   macOS: afplay │ Linux: mpv │ Win: PowerShell  │  │    │
 │  │  └─────────────────────────────────────────────────┘  │    │
 │  └──────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Relay / phone companion
+
+The relay (`cmd/relay`) is a separate background server started by the
+`SessionStart` hook (`relay-start.sh`) when `CLAUDE_TTS_ENABLED=true`, and stopped
+by the `SessionEnd` hook (`relay-stop.sh`). It enables phone delivery without
+Telegram by serving a small companion PWA over SSE plus Web Push.
+
+```
+                          host machine
+   ┌──────────────────────────────────────────────────────────┐
+   │  auto-speak.sh (Stop hook)                                │
+   │        │  POST {"text": ...}                              │
+   │        ▼                                                  │
+   │  Ingest server   127.0.0.1:8765  (loopback only)          │
+   │        │  synthesize via provider (OpenAI / Grok)         │
+   │        ▼                                                  │
+   │  SSE hub  ──►  Public server   0.0.0.0:8766               │
+   │                  • companion PWA + audio over SSE         │
+   │                  • Web Push / VAPID notifications         │
+   │                  • QR pairing + token auth                │
+   │                  • token rotation + presence tracking     │
+   └──────────────────────────────────────────────────────────┘
+                          │  (LAN, token-authenticated)
+                          ▼
+                    paired phone (PWA)
+```
+
+- **Ingest server** binds to `127.0.0.1:8765` (loopback only; override with
+  `RELAY_PORT`) and accepts the Stop-hook POSTs.
+- **Public server** binds to `0.0.0.0:8766` (override with `PUBLIC_PORT`) so a
+  phone on the same LAN can connect. Access is gated by a token established via
+  QR pairing; the relay supports token rotation and presence tracking.
+- Piper is **local-playback only** and cannot be used with the relay; the relay
+  requires a cloud provider (OpenAI or Grok).
+
+See [docs/relay.md](docs/relay.md) for the full relay overview: the two-port
+architecture, the token model and rotation, QR pairing, VAPID/Web Push, and the
+security posture (the public server is meant to sit behind
+[Tailscale Funnel](docs/tailscale-funnel-setup.md), not raw-exposed). For
+on-device validation see the
+[Android verification checklist](docs/android-verification-checklist.md).
 
 ## Usage
 
@@ -209,20 +260,38 @@ Get the current status of the TTS system.
   "total_processed": 15,
   "total_failed": 0,
   "is_playing": false,
+  "is_paused": false,
+  "voice_mode": "computer",
+  "telegram_configured": false,
   "recent_jobs": [...]
 }
 ```
 
 ## Automatic TTS (Deterministic)
 
-This plugin includes a **Stop hook** that automatically speaks the first sentence of every Claude response. No configuration needed - it just works.
+This plugin registers **three hooks** in `plugin.json`:
+
+| Hook | Event | What it does |
+|------|-------|--------------|
+| `auto-speak.sh` | `Stop` | Speaks the first sentence of each Claude response via the relay |
+| `relay-start.sh` | `SessionStart` | Starts the background relay server |
+| `relay-stop.sh` | `SessionEnd` | Stops the relay server (prevents an orphaned process holding the listening sockets) |
+
+Automatic TTS is **opt-in**, not zero-config: set `CLAUDE_TTS_ENABLED=true` in your
+environment. Both `auto-speak.sh` and `relay-start.sh` exit immediately (zero
+overhead) when it is unset. The Stop hook also requires `jq` on `PATH`.
 
 **How it works:**
 ```
-Claude responds → Stop hook fires → First sentence extracted → Audio plays
+SessionStart → relay-start.sh starts the relay
+Claude responds → Stop hook fires → first sentence extracted
+   → curl POST /ingest → relay synthesizes → audio plays (and/or phone)
+SessionEnd → relay-stop.sh stops the relay
 ```
 
-The hook runs in the background and won't block Claude's responses.
+Note that the Stop hook goes through the **relay** (`POST /ingest`), not the
+in-process MCP worker pool — the worker pool serves the MCP `speak` tool path.
+The hooks run in the background and won't block Claude's responses.
 
 ### speak-text CLI
 
@@ -251,19 +320,29 @@ claude-code-tts/
 ├── cmd/
 │   ├── tts-server/
 │   │   └── main.go           # MCP server entry point
-│   └── speak-text/
-│       └── main.go           # Standalone CLI binary
+│   ├── speak-text/
+│   │   └── main.go           # Standalone CLI binary
+│   └── relay/
+│       └── main.go           # Relay server: ingest (127.0.0.1:8765) + public (0.0.0.0:8766)
 ├── hooks/
-│   └── auto-speak.sh         # Stop hook for deterministic TTS
+│   ├── auto-speak.sh         # Stop hook: POSTs first sentence to the relay
+│   ├── relay-start.sh        # SessionStart hook: starts the relay
+│   └── relay-stop.sh         # SessionEnd hook: stops the relay
 ├── internal/
-│   ├── audio/
-│   │   └── player.go         # Cross-platform audio playback
-│   ├── server/
-│   │   ├── server.go         # MCP server & tool handlers
-│   │   └── worker.go         # Worker pool implementation
-│   └── tts/
-│       └── openai.go         # OpenAI TTS client
-├── plugin.json                # Plugin metadata + hook config
+│   ├── audio/                # Cross-platform audio playback
+│   ├── server/               # MCP server, tool handlers & worker pool
+│   ├── tts/                  # Provider abstraction
+│   │   ├── provider.go       #   Provider interface, Request/Audio types
+│   │   ├── openai.go         #   OpenAI TTS client
+│   │   ├── grok.go           #   Grok (xAI) TTS client
+│   │   └── piper.go          #   Local Piper synthesis
+│   ├── relay/                # Ingest/public servers, SSE hub, Web Push/VAPID,
+│   │                         #   QR pairing, token rotation, presence, companion PWA
+│   ├── telegram/             # Telegram Bot API sender (voice / audio)
+│   ├── voicemode/            # Persisted output mode (off/computer/phone/both)
+│   ├── ttsconfig/            # Config + registry (provider/profile resolution)
+│   └── logging/              # File logging
+├── plugin.json                # Plugin metadata + hook config (Stop, SessionStart, SessionEnd)
 ├── Makefile                   # Build automation
 └── install.sh                 # One-liner installer
 ```

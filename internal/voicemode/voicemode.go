@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -48,13 +49,25 @@ func DefaultStore() *Store { return NewStore(statePath()) }
 
 func statePath() string {
 	if p := os.Getenv("CLAUDE_TTS_STATE"); p != "" {
-		return p
+		return expandHome(p)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
 	return filepath.Join(home, ".claude", "plugins", "claude-code-tts", "state.json")
+}
+
+// expandHome expands a leading "~/" to the user's home directory. Other paths
+// (including a bare "~") are returned unchanged. It mirrors the helper used by
+// the Piper provider so "~" is honored consistently for all path inputs.
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
 }
 
 type state struct {
@@ -89,7 +102,10 @@ func (s *Store) Set(m Mode) error {
 			return fmt.Errorf("voicemode: create dir: %w", err)
 		}
 	}
-	data, _ := json.Marshal(state{Mode: m})
+	data, err := json.Marshal(state{Mode: m})
+	if err != nil {
+		return fmt.Errorf("voicemode: marshal: %w", err)
+	}
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("voicemode: write: %w", err)

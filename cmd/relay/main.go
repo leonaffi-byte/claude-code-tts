@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -44,16 +45,10 @@ func main() {
 	}
 
 	// Ingest server binds to loopback only — never exposed on 0.0.0.0.
-	ingestPort := os.Getenv("RELAY_PORT")
-	if ingestPort == "" {
-		ingestPort = "8765"
-	}
+	ingestPort := validatePort("RELAY_PORT", os.Getenv("RELAY_PORT"), "8765")
 	ingestAddr := "127.0.0.1:" + ingestPort
 
-	publicPort := os.Getenv("PUBLIC_PORT")
-	if publicPort == "" {
-		publicPort = "8766"
-	}
+	publicPort := validatePort("PUBLIC_PORT", os.Getenv("PUBLIC_PORT"), "8766")
 
 	// Print QR code so the user can scan from their phone.
 	baseURL := fmt.Sprintf("http://%s:%s", lanIP(), publicPort)
@@ -90,13 +85,19 @@ func main() {
 	ps := relay.NewPushSender(pushTransport)
 
 	// Wire token store and QR printer into the ingest handler for /rotate-token.
+	//
+	// Note: we intentionally do NOT pass a clip base URL containing the secret
+	// token. Embedding the token in the push payload URL would ship the sole
+	// auth secret to third-party push services and persist it in the phone's
+	// notification store. Instead the push payload carries only the clip ID, and
+	// the service worker resolves the clip URL relative to its own token-scoped
+	// registration scope (see web/sw.js playClip(clipId)).
 	ingestSrv.Handler().
 		WithTokenStore(ts).
 		WithQRPrinter(func(newToken string) error {
 			return relay.PrintQR(os.Stdout, baseURL, newToken)
 		}).
-		WithPushSender(ps).
-		WithClipBaseURL(baseURL + "/" + token)
+		WithPushSender(ps)
 
 	companion := relay.NewCompanionHandler(store, hub, ts).
 		WithPushSender(ps).
@@ -134,9 +135,15 @@ func main() {
 }
 
 // lanIP returns the first non-loopback IPv4 address found on the host, or
-// "localhost" when no suitable interface is found.
+// "localhost" when no suitable interface is found. It logs a warning when the
+// interface lookup fails or no usable LAN IPv4 exists so that a fallback to an
+// unreachable "localhost" QR is observable to the operator.
 func lanIP() string {
-	addrs, _ := net.InterfaceAddrs()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		logging.Warn("could not enumerate network interfaces (%v); QR will point to localhost and may be unreachable from a phone", err)
+		return "localhost"
+	}
 	for _, a := range addrs {
 		if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
 			if ip4 := ipNet.IP.To4(); ip4 != nil {
@@ -144,5 +151,24 @@ func lanIP() string {
 			}
 		}
 	}
+	logging.Warn("no non-loopback LAN IPv4 found; QR will point to localhost and may be unreachable from a phone")
 	return "localhost"
+}
+
+// validatePort validates a port string read from the environment. When raw is
+// empty the provided default is used. A non-numeric or out-of-range value is a
+// fatal startup error so the operator gets a clear message before any listener
+// is started or the QR is printed. It returns the validated port as a string.
+func validatePort(name, raw, def string) string {
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		logging.Fatal("invalid %s %q: must be a number between 1 and 65535", name, raw)
+	}
+	if n < 1 || n > 65535 {
+		logging.Fatal("invalid %s %d: must be between 1 and 65535", name, n)
+	}
+	return raw
 }
