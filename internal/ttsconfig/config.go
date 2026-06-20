@@ -28,8 +28,61 @@ type Profile struct {
 // TelegramConfig configures Telegram delivery. The bot token is read from the
 // named environment variable; the chat id is stored directly (not secret).
 type TelegramConfig struct {
-	BotTokenEnv string `json:"bot_token_env"`
-	ChatID      string `json:"chat_id"`
+	BotTokenEnv string         `json:"bot_token_env"`
+	ChatID      string         `json:"chat_id"`
+	Inbound     *InboundConfig `json:"inbound,omitempty"`
+}
+
+// InboundConfig configures the Telegram→Claude return path. Translate is a
+// pointer so an omitted value can default to true (on) rather than false.
+type InboundConfig struct {
+	Enabled         bool   `json:"enabled"`
+	TranscribeModel string `json:"transcribe_model"`
+	Translate       *bool  `json:"translate"`
+	SourceLanguage  string `json:"source_language"`
+	TargetLanguage  string `json:"target_language"`
+	RequireReply    bool   `json:"require_reply"`
+}
+
+// ResolvedInbound is InboundConfig with all defaults applied.
+type ResolvedInbound struct {
+	Enabled         bool
+	TranscribeModel string
+	Translate       bool
+	SourceLanguage  string
+	TargetLanguage  string
+	RequireReply    bool
+}
+
+// ResolvedInbound applies defaults: transcribe model gpt-4o-mini-transcribe,
+// translate on, source auto, target English. A nil TelegramConfig or nil
+// Inbound yields a disabled result.
+func (t *TelegramConfig) ResolvedInbound() ResolvedInbound {
+	in := InboundConfig{}
+	if t != nil && t.Inbound != nil {
+		in = *t.Inbound
+	}
+	r := ResolvedInbound{
+		Enabled:         in.Enabled,
+		TranscribeModel: in.TranscribeModel,
+		SourceLanguage:  in.SourceLanguage,
+		TargetLanguage:  in.TargetLanguage,
+		RequireReply:    in.RequireReply,
+		Translate:       true,
+	}
+	if in.Translate != nil {
+		r.Translate = *in.Translate
+	}
+	if r.TranscribeModel == "" {
+		r.TranscribeModel = "gpt-4o-mini-transcribe"
+	}
+	if r.SourceLanguage == "" {
+		r.SourceLanguage = "auto"
+	}
+	if r.TargetLanguage == "" {
+		r.TargetLanguage = "English"
+	}
+	return r
 }
 
 // Config is the on-disk configuration.
@@ -68,6 +121,9 @@ func configPath() string {
 	}
 	return filepath.Join(home, ".claude", "plugins", "claude-code-tts", "config.json")
 }
+
+// LoadConfigOrDefault reads the config file, returning DefaultConfig() when absent.
+func LoadConfigOrDefault() (*Config, error) { return loadConfig() }
 
 // expandHome expands a leading "~/" to the user's home directory. Other paths
 // (including a bare "~") are returned unchanged. It mirrors the helper used by
